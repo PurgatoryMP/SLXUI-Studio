@@ -1,3 +1,4 @@
+# graphics_item.py
 from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QCursor, QFont
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem
@@ -11,10 +12,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
         self.tag_name = tag_name
         self.attributes = attributes or {}
 
-        # State tracking for Tab Containers
+        self.source_file = "layout.xml"
+        self.is_imported_root = False
         self.active_tab_index = 0
 
-        # 1. Inherit parameters based on schema registry
+        # Inherit parameters based on schema registry
         target_params = {}
         for cat_name, widgets in XUI_REGISTRY.items():
             if tag_name in widgets:
@@ -27,11 +29,9 @@ class XUIGraphicsItem(QGraphicsRectItem):
                     self.attributes["height"] = str(widgets[tag_name]["height"])
                 break
 
-        # If not specialized, default to LLView / LLUICtrl params
         if not target_params:
             target_params = LLUICTRL_PARAMS if tag_name != "view" else LLVIEW_PARAMS
 
-        # Populate defaults
         for attr, meta in target_params.items():
             if attr not in self.attributes and meta.get("default", "") != "":
                 self.attributes[attr] = meta["default"]
@@ -46,6 +46,7 @@ class XUIGraphicsItem(QGraphicsRectItem):
         self.child_xui_items = []
         self.non_visual_children = []
         self.inner_text = ""
+
         self.resize_handle_size = 6
         self.resizing = False
         self.resize_dir = None
@@ -65,14 +66,14 @@ class XUIGraphicsItem(QGraphicsRectItem):
         pos = self.pos()
         self.attributes["width"] = str(int(rect.width()))
         self.attributes["height"] = str(int(rect.height()))
-        self.attributes["left"] = str(int(pos.x()))
-        self.attributes["top"] = str(int(pos.y()))
+
+        # Determine if we should update absolute or relative coordinates
+        if "left_delta" not in self.attributes and "left_pad" not in self.attributes:
+            self.attributes["left"] = str(int(pos.x()))
+        if "top_delta" not in self.attributes and "top_pad" not in self.attributes:
+            self.attributes["top"] = str(int(pos.y()))
 
     def resize_item(self, new_w, new_h):
-        """
-        Calculates geometric deltas and cascades resize events to child elements
-        based strictly on their SL 'follows' attribute anchoring rules.
-        """
         old_w = self.rect().width()
         old_h = self.rect().height()
         dw = new_w - old_w
@@ -91,37 +92,30 @@ class XUIGraphicsItem(QGraphicsRectItem):
             else:
                 follows = follows_str.split("|")
 
-            cx = child.x()
-            cy = child.y()
-            cw = child.rect().width()
-            ch = child.rect().height()
+            cx, cy = child.x(), child.y()
+            cw, ch = child.rect().width(), child.rect().height()
+            child_dw = child_dh = move_x = move_y = 0
 
-            child_dw = 0
-            child_dh = 0
-            move_x = 0
-            move_y = 0
-
-            # Horizontal Follows Math
             if "left" in follows and "right" in follows:
                 child_dw = dw
             elif "right" in follows and "left" not in follows:
                 move_x = dw
 
-            # Vertical Follows Math
             if "top" in follows and "bottom" in follows:
                 child_dh = dh
             elif "bottom" in follows and "top" not in follows:
                 move_y = dh
 
-            # Reposition anchored elements
             if move_x != 0 or move_y != 0:
                 child.setPos(cx + move_x, cy + move_y)
                 child.sync_attributes_to_geometry()
 
-            # Resize nested scaled elements
             if child_dw != 0 or child_dh != 0:
                 child.resize_item(cw + child_dw, ch + child_dh)
 
+    # ------------------------------------------------------------------------
+    # RESTORED CHILD & TAB ROUTING METHODS
+    # ------------------------------------------------------------------------
     def update_tabs(self):
         """Forces tab panels to fit the container and hides inactive tabs."""
         if self.tag_name != "tab_container":
@@ -139,13 +133,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
             is_active = (i == self.active_tab_index)
             tab.setVisible(is_active)
 
-            # Snap tab geometries to fill the body area of the tab container seamlessly
             tab.setPos(0, tab_height)
             tab.attributes["left"] = "0"
             tab.attributes["top"] = str(tab_height)
 
             try:
-                # Use our new layout solver to correctly push scale events through active tabs
                 tab.resize_item(float(container_w), float(container_h))
             except ValueError:
                 pass
@@ -173,12 +165,222 @@ class XUIGraphicsItem(QGraphicsRectItem):
         if self.tag_name == "tab_container":
             self.update_tabs()
 
+    # ------------------------------------------------------------------------
+    # RESTORED BOUNDING & DELETE LOGIC
+    # ------------------------------------------------------------------------
     def _get_delete_rect(self):
         rect = self.rect()
         return QRectF(rect.width() - 10, -10, 18, 18)
 
     def boundingRect(self):
         return self.rect().adjusted(-12, -12, 12, 12)
+
+    # ------------------------------------------------------------------------
+    # 8-WAY OMNIDIRECTIONAL RESIZE LOGIC
+    # ------------------------------------------------------------------------
+    def _get_handles(self):
+        """Returns the 8 10px interaction handles for omnidirectional resizing"""
+        r = self.rect()
+        w, h, hs = r.width(), r.height(), self.resize_handle_size
+        return {
+            "TL": QRectF(0, 0, hs, hs),
+            "T": QRectF(w / 2 - hs / 2, 0, hs, hs),
+            "TR": QRectF(w - hs, 0, hs, hs),
+            "R": QRectF(w - hs, h / 2 - hs / 2, hs, hs),
+            "BR": QRectF(w - hs, h - hs, hs, hs),
+            "B": QRectF(w / 2 - hs / 2, h - hs, hs, hs),
+            "BL": QRectF(0, h - hs, hs, hs),
+            "L": QRectF(0, h / 2 - hs / 2, hs, hs),
+        }
+
+    def _draw_handles(self, painter):
+        painter.setBrush(QBrush(QColor("#00FF00")))
+        painter.setPen(QPen(QColor("#000000"), 1))
+
+        for handle in self._get_handles().values():
+            painter.drawRect(handle)
+
+        del_rect = self._get_delete_rect()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setBrush(QBrush(QColor("#D32F2F")))
+        painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
+        painter.drawEllipse(del_rect)
+        painter.setFont(QFont("SansSerif", 8, QFont.Bold))
+        painter.drawText(del_rect, Qt.AlignCenter, "X")
+
+    # ------------------------------------------------------------------------
+    # EVENTS
+    # ------------------------------------------------------------------------
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            pos = event.pos()
+
+            # Interactive Tab Switching
+            if self.tag_name == "tab_container":
+                tab_height = int(self.attributes.get("tab_height", 21))
+                if pos.y() <= tab_height:
+                    actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
+                    if actual_panels:
+                        tab_x = 2
+                        for i, tab_panel in enumerate(actual_panels):
+                            tab_label = tab_panel.attributes.get("label", tab_panel.attributes.get("title",
+                                                                                                   tab_panel.attributes.get(
+                                                                                                       "name",
+                                                                                                       "Unnamed Tab")))
+                            min_w = int(self.attributes.get("tab_min_width", 60))
+                            max_w = int(self.attributes.get("tab_max_width", 150))
+                            calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20))
+
+                            if tab_x <= pos.x() <= tab_x + calc_width:
+                                self.active_tab_index = i
+                                self.update_tabs()
+                                self.scene().update()
+                                super().mousePressEvent(event)
+                                return
+                            tab_x += calc_width
+
+            if self.isSelected():
+                if self._get_delete_rect().contains(pos):
+                    if hasattr(self.scene(), 'canvas_container'):
+                        self.scene().canvas_container.delete_item(self)
+                    event.accept()
+                    return
+
+                handles = self._get_handles()
+                for h_id, rect in handles.items():
+                    if rect.contains(pos):
+                        self.resizing = True
+                        self.resize_dir = h_id
+                        event.accept()
+                        return
+
+        super().mousePressEvent(event)
+
+    def hoverMoveEvent(self, event):
+        if not self.isSelected():
+            self.setCursor(QCursor(Qt.ArrowCursor))
+            return super().hoverMoveEvent(event)
+
+        pos = event.pos()
+        handles = self._get_handles()
+
+        if self._get_delete_rect().contains(pos):
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+        elif handles["TL"].contains(pos) or handles["BR"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeFDiagCursor))
+        elif handles["TR"].contains(pos) or handles["BL"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeBDiagCursor))
+        elif handles["T"].contains(pos) or handles["B"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeVerCursor))
+        elif handles["L"].contains(pos) or handles["R"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeHorCursor))
+        else:
+            self.setCursor(QCursor(Qt.SizeAllCursor))
+
+        super().hoverMoveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.resizing and self.resize_dir:
+            scene_pos = self.mapToScene(event.pos())
+            parent_pos = self.parentItem().mapFromScene(scene_pos) if self.parentItem() else scene_pos
+
+            snapped_x = round(parent_pos.x() / 10.0) * 10.0
+            snapped_y = round(parent_pos.y() / 10.0) * 10.0
+
+            cur_pos = self.pos()
+            cur_rect = self.rect()
+
+            new_x, new_y = cur_pos.x(), cur_pos.y()
+            new_w, new_h = cur_rect.width(), cur_rect.height()
+
+            # 8-Way scaling algebra
+            if "L" in self.resize_dir:
+                diff = snapped_x - cur_pos.x()
+                new_w = max(10, cur_rect.width() - diff)
+                if new_w > 10: new_x = snapped_x
+            elif "R" in self.resize_dir:
+                new_w = max(10, snapped_x - cur_pos.x())
+
+            if "T" in self.resize_dir:
+                diff = snapped_y - cur_pos.y()
+                new_h = max(10, cur_rect.height() - diff)
+                if new_h > 10: new_y = snapped_y
+            elif "B" in self.resize_dir:
+                new_h = max(10, snapped_y - cur_pos.y())
+
+            if new_x != cur_pos.x() or new_y != cur_pos.y():
+                self.setPos(new_x, new_y)
+            if new_w != cur_rect.width() or new_h != cur_rect.height():
+                self.resize_item(new_w, new_h)
+
+            self.scene().update()
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.resizing:
+            self.resizing = False
+            self.resize_dir = None
+            self.sync_attributes_to_geometry()
+
+            if self.tag_name == "tab_container":
+                self.update_tabs()
+
+            if hasattr(self.scene(), 'canvas_container'):
+                self.scene().canvas_container.notify_item_changed(self)
+        super().mouseReleaseEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene():
+            new_pos = value
+            snapped_x = round(new_pos.x() / 10.0) * 10.0
+            snapped_y = round(new_pos.y() / 10.0) * 10.0
+
+            # -- RELATIVE LAYOUT PRESERVATION LOGIC --
+            parent = self.parentItem()
+            idx = parent.child_xui_items.index(self) if isinstance(parent,
+                                                                   XUIGraphicsItem) and self in parent.child_xui_items else -1
+            prev_sib = parent.child_xui_items[idx - 1] if idx > 0 else None
+
+            if "left_delta" in self.attributes and prev_sib:
+                self.attributes["left_delta"] = str(int(snapped_x - prev_sib.x()))
+            elif "left_pad" in self.attributes and prev_sib:
+                self.attributes["left_pad"] = str(int(snapped_x - (prev_sib.x() + prev_sib.rect().width())))
+            else:
+                self.attributes["left"] = str(int(snapped_x))
+
+            if "top_delta" in self.attributes and prev_sib:
+                self.attributes["top_delta"] = str(int(snapped_y - prev_sib.y()))
+            elif "top_pad" in self.attributes and prev_sib:
+                self.attributes["top_pad"] = str(int(snapped_y - (prev_sib.y() + prev_sib.rect().height())))
+            else:
+                self.attributes["top"] = str(int(snapped_y))
+
+            if hasattr(self.scene(), 'canvas_container') and self.scene().canvas_container:
+                self.scene().canvas_container.notify_item_changed(self)
+            return QPointF(snapped_x, snapped_y)
+        return super().itemChange(change, value)
+
+    def validate(self):
+        """Analyzes the node for syntax errors (red) and structural bad practices (orange)."""
+        errors, warnings = [], []
+        if self.tag_name not in ["panel", "layout_panel", "text", "view_border", "icon", "window_shade", "accordion",
+                                 "scroll_list"]:
+            if not self.attributes.get("name"):
+                warnings.append(f"Bad Practice: Missing 'name' attribute for {self.tag_name}.")
+
+        if self.tag_name == "layout_panel":
+            parent = self.parentItem()
+            if not isinstance(parent, XUIGraphicsItem) or parent.tag_name != "layout_stack":
+                errors.append(f"Syntax Error: <layout_panel> must be a direct child of <layout_stack>.")
+
+        has_left, has_right = "left" in self.attributes, "right" in self.attributes
+        follows = self.attributes.get("follows", "").lower()
+        if has_left and has_right and "left" not in follows and "right" not in follows and "all" not in follows:
+            warnings.append("Bad Practice: Opposing anchors (left & right) used without matching 'follows' flags.")
+
+        return errors, warnings
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, False)
@@ -205,7 +407,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.drawText(header_rect.adjusted(8, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, title)
 
         elif self.tag_name in ["button", "flyout_button", "split_button"]:
-            # NOW READING DYNAMICALLY FROM ATTRIBUTES
             img_attr = self.attributes.get("image_unselected", "PushButton_Off")
             btn_pix = tm.get_pixmap(img_attr)
             if btn_pix:
@@ -215,7 +416,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 painter.setPen(QPen(QColor("#2b333b"), 1))
                 painter.drawRect(rect)
             painter.setPen(QPen(QColor("#FFFFFF")))
-            painter.drawText(rect, Qt.AlignCenter, self.attributes.get("label", "Button"))
+            painter.drawText(rect, Qt.AlignCenter,
+                             self.attributes.get("label", "Button") or self.attributes.get("name", "Button"))
 
         elif self.tag_name in ["line_editor", "search_editor", "spinner", "combo_box"]:
             default_tex = "TextField_Off" if self.tag_name != "combo_box" else "ComboButton_Off"
@@ -332,127 +534,3 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
             self._draw_handles(painter)
-
-    def _draw_handles(self, painter):
-        painter.setBrush(QBrush(QColor("#00FF00")))
-        painter.setPen(QPen(QColor("#000000"), 1))
-        rect = self.rect()
-        hs = self.resize_handle_size
-
-        for h in [
-            QRectF(0, 0, hs, hs),
-            QRectF(rect.width() - hs, 0, hs, hs),
-            QRectF(0, rect.height() - hs, hs, hs),
-            QRectF(rect.width() - hs, rect.height() - hs, hs, hs)
-        ]:
-            painter.drawRect(h)
-
-        del_rect = self._get_delete_rect()
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setBrush(QBrush(QColor("#D32F2F")))
-        painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
-        painter.drawEllipse(del_rect)
-        painter.setFont(QFont("SansSerif", 8, QFont.Bold))
-        painter.drawText(del_rect, Qt.AlignCenter, "X")
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            pos = event.pos()
-
-            if self.tag_name == "tab_container":
-                tab_height = int(self.attributes.get("tab_height", 21))
-                if pos.y() <= tab_height:
-                    actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
-                    if actual_panels:
-                        tab_x = 2
-                        for i, tab_panel in enumerate(actual_panels):
-                            tab_label = tab_panel.attributes.get("label", tab_panel.attributes.get("title",
-                                                                                                   tab_panel.attributes.get(
-                                                                                                       "name",
-                                                                                                       "Unnamed Tab")))
-                            min_w = int(self.attributes.get("tab_min_width", 60))
-                            max_w = int(self.attributes.get("tab_max_width", 150))
-                            calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20))
-
-                            if tab_x <= pos.x() <= tab_x + calc_width:
-                                self.active_tab_index = i
-                                self.update_tabs()
-                                self.scene().update()
-                                super().mousePressEvent(event)
-                                return
-                            tab_x += calc_width
-
-            if self.isSelected():
-                rect = self.rect()
-                hs = self.resize_handle_size
-                if self._get_delete_rect().contains(pos):
-                    if self.scene() and hasattr(self.scene(), 'canvas_container'):
-                        self.scene().canvas_container.delete_item(self)
-                    event.accept()
-                    return
-                if QRectF(rect.width() - hs, rect.height() - hs, hs, hs).contains(pos):
-                    self.resizing = True
-                    self.resize_dir = "BR"
-                    event.accept()
-                    return
-
-        super().mousePressEvent(event)
-
-    def hoverMoveEvent(self, event):
-        if not self.isSelected():
-            self.setCursor(QCursor(Qt.ArrowCursor))
-            return super().hoverMoveEvent(event)
-        pos = event.pos()
-        rect = self.rect()
-        hs = self.resize_handle_size
-        if self._get_delete_rect().contains(pos):
-            self.setCursor(QCursor(Qt.PointingHandCursor))
-        elif QRectF(0, 0, hs, hs).contains(pos) or QRectF(rect.width() - hs, rect.height() - hs, hs, hs).contains(pos):
-            self.setCursor(QCursor(Qt.SizeFDiagCursor))
-        elif QRectF(rect.width() - hs, 0, hs, hs).contains(pos) or QRectF(0, rect.height() - hs, hs, hs).contains(pos):
-            self.setCursor(QCursor(Qt.SizeBDiagCursor))
-        else:
-            self.setCursor(QCursor(Qt.SizeAllCursor))
-        super().hoverMoveEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.resizing and self.resize_dir == "BR":
-            # CRITICAL FIX: Snap resized bounding box strictly to the 10x10 grid
-            raw_w = event.pos().x()
-            raw_h = event.pos().y()
-            snapped_w = max(20.0, round(raw_w / 10.0) * 10.0)
-            snapped_h = max(20.0, round(raw_h / 10.0) * 10.0)
-
-            # Check if dimensions actually snapped to a new 10px increment to prevent useless repaints
-            if snapped_w != self.rect().width() or snapped_h != self.rect().height():
-                self.resize_item(snapped_w, snapped_h)
-                self.scene().update()
-
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self.resizing:
-            self.resizing = False
-            self.resize_dir = None
-            self.sync_attributes_to_geometry()
-
-            if self.tag_name == "tab_container":
-                self.update_tabs()
-
-            if hasattr(self.scene(), 'canvas_container') and self.scene().canvas_container:
-                self.scene().canvas_container.notify_item_changed(self)
-        super().mouseReleaseEvent(event)
-
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionChange and self.scene():
-            new_pos = value
-            snapped_x = round(new_pos.x() / 10.0) * 10.0
-            snapped_y = round(new_pos.y() / 10.0) * 10.0
-            self.attributes["left"] = str(int(snapped_x))
-            self.attributes["top"] = str(int(snapped_y))
-            if hasattr(self.scene(), 'canvas_container') and self.scene().canvas_container:
-                self.scene().canvas_container.notify_item_changed(self)
-            return QPointF(snapped_x, snapped_y)
-        return super().itemChange(change, value)

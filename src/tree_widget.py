@@ -42,8 +42,17 @@ class SceneTreeWidget(QTreeWidget):
     def _add_node_to_tree(self, xui_item, parent_tree_item):
         name_str = xui_item.attributes.get("name", xui_item.tag_name)
         display_text = f"<{xui_item.tag_name}> {name_str}"
+
+        if xui_item.is_imported_root:
+            display_text += f" - ({xui_item.source_file})"
+
         tree_item = QTreeWidgetItem(parent_tree_item, [display_text])
         tree_item.setData(0, Qt.UserRole, xui_item)
+
+        # Give imported references a distinctive Green color
+        if xui_item.is_imported_root:
+            from PySide6.QtGui import QColor, QBrush
+            tree_item.setForeground(0, QBrush(QColor("#00FF00")))
 
         for child in xui_item.child_xui_items:
             self._add_node_to_tree(child, tree_item)
