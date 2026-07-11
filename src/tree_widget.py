@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QAbstractItemView
 )
@@ -6,7 +6,6 @@ from graphics_item import XUIGraphicsItem
 
 
 class SceneTreeWidget(QTreeWidget):
-    # Added: Signal emitted whenever the tree fully rebuilds itself
     tree_refreshed = Signal()
 
     def __init__(self, parent=None):
@@ -21,12 +20,22 @@ class SceneTreeWidget(QTreeWidget):
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.setDefaultDropAction(Qt.MoveAction)
 
+        # PERFORMANCE FIX: Debounce Timer for Tree Rebuilding
+        self.refresh_timer = QTimer()
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setInterval(150)
+        self.refresh_timer.timeout.connect(self._do_refresh_tree)
+
     def set_canvas(self, canvas):
         self.canvas_container = canvas
         canvas.item_selected_signal.connect(self.select_item_from_canvas)
         canvas.item_modified_signal.connect(self.refresh_tree)
 
     def refresh_tree(self, _ignored=None):
+        # Trigger the timer instead of instantly rebuilding
+        self.refresh_timer.start()
+
+    def _do_refresh_tree(self):
         if self.syncing or not self.canvas_container:
             return
         self.syncing = True
@@ -37,7 +46,7 @@ class SceneTreeWidget(QTreeWidget):
             self.expandAll()
 
         self.syncing = False
-        self.tree_refreshed.emit()  # Notify that tree is rebuilt and ready for search highlights
+        self.tree_refreshed.emit()
 
     def _add_node_to_tree(self, xui_item, parent_tree_item):
         name_str = xui_item.attributes.get("name", xui_item.tag_name)
@@ -49,7 +58,6 @@ class SceneTreeWidget(QTreeWidget):
         tree_item = QTreeWidgetItem(parent_tree_item, [display_text])
         tree_item.setData(0, Qt.UserRole, xui_item)
 
-        # Give imported references a distinctive Green color
         if xui_item.is_imported_root:
             from PySide6.QtGui import QColor, QBrush
             tree_item.setForeground(0, QBrush(QColor("#00FF00")))

@@ -96,15 +96,24 @@ XUI_REGISTRY = {
                 "tab_height": {"type": "int", "default": "21", "group": "LLTabContainer"},
             }
         },
-        "layout_stack": {"width": 220, "height": 200, "desc": "Arranges layout panels linearly",
-                         "params": {**LLVIEW_PARAMS,
-                                    "orientation": {"type": "combo", "options": ["horizontal", "vertical"],
-                                                    "default": "vertical", "group": "LLLayoutStack"}}},
-        "layout_panel": {"width": 180, "height": 120, "desc": "Layout container embedded inside stacks",
-                         "params": {**LLVIEW_PARAMS,
-                                    "auto_resize": {"type": "bool", "default": "true", "group": "LLLayoutPanel"}}},
-        "accordion": {"width": 200, "height": 250, "desc": "Collapsible vertical accordion container",
-                      "params": {**LLVIEW_PARAMS}},
+        "layout_stack": {
+            "width": 220, "height": 200, "desc": "Arranges layout panels linearly",
+            "params": {**LLVIEW_PARAMS,
+                       "orientation": {"type": "combo", "options": ["horizontal", "vertical"], "default": "vertical",
+                                       "group": "LLLayoutStack"}}
+        },
+        "layout_panel": {
+            "width": 180, "height": 120, "desc": "Layout container embedded inside stacks",
+            "params": {
+                **LLVIEW_PARAMS,
+                "auto_resize": {"type": "bool", "default": "true", "group": "LLLayoutPanel"},
+                "user_resize": {"type": "bool", "default": "false", "group": "LLLayoutPanel"}
+            }
+        },
+        "accordion": {
+            "width": 200, "height": 250, "desc": "Collapsible vertical accordion container",
+            "params": {**LLVIEW_PARAMS}
+        },
     },
     "Buttons & Toggles": {
         "button": {

@@ -1,7 +1,6 @@
-# main_window.py
 import os
 import xml.etree.ElementTree as ET
-from PySide6.QtCore import Qt, QPointF, QMimeData
+from PySide6.QtCore import Qt, QPointF, QMimeData, QTimer
 from PySide6.QtGui import (
     QFont, QAction, QDrag, QTextDocument, QTextCursor, QTextFormat,
     QTextCharFormat, QColor, QBrush
@@ -50,7 +49,14 @@ class MainWindow(QMainWindow):
         self.tree_search_matches = []
         self.tree_search_idx = -1
 
-        self.code_editors = {}  # Mapping of filename -> QTextEdit
+        self.code_editors = {}
+        self.compiled_results = {}  # Caches XML structural validation so search doesn't wipe it
+
+        # PERFORMANCE FIX: Debounce Timer for XML Compilation
+        self.code_refresh_timer = QTimer()
+        self.code_refresh_timer.setSingleShot(True)
+        self.code_refresh_timer.setInterval(150)
+        self.code_refresh_timer.timeout.connect(self._do_refresh_code_view)
 
         self._setup_menus()
         self._setup_ui()
@@ -102,7 +108,6 @@ class MainWindow(QMainWindow):
         self.canvas.setBackgroundBrush(QBrush(QColor(CONFIG["ui_colors"]["canvas_bg"])))
         center_splitter.addWidget(self.canvas)
 
-        # LIVE XML SOURCE TABS
         code_container = QWidget()
         code_layout = QVBoxLayout(code_container)
         code_layout.setContentsMargins(0, 0, 0, 0)
@@ -132,7 +137,6 @@ class MainWindow(QMainWindow):
         center_splitter.setSizes([650, 300])
         main_splitter.addWidget(center_splitter)
 
-        # RIGHT PANEL
         right_splitter = QSplitter(Qt.Vertical)
         tree_container = QWidget()
         tree_layout = QVBoxLayout(tree_container)
@@ -173,21 +177,23 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_splitter)
         main_splitter.setSizes([250, 950, 400])
 
+        # Hook signals into the debounce timer instead of immediate execution
         self.canvas.item_selected_signal.connect(self._on_item_selected)
-        self.canvas.item_modified_signal.connect(self._refresh_code_view)
-        self.inspector.property_changed_signal.connect(self._refresh_code_view)
+        self.canvas.item_modified_signal.connect(self._queue_refresh)
+        self.inspector.property_changed_signal.connect(self._queue_refresh)
         self.scene_tree.tree_refreshed.connect(self._reapply_tree_search)
 
     def _open_preferences(self):
         dlg = PreferencesDialog(self)
         dlg.exec()
 
-    # --- XML SEARCH LOGIC ---
+    # --- XML SEARCH LOGIC (Decoupled from XML Compiler) ---
     def _get_active_editor(self):
         return self.code_tabs.currentWidget()
 
     def _on_xml_search_changed(self, text):
-        self._refresh_code_view()
+        # Reapply highlights using cached compilation structure + new search term
+        self._apply_extra_selections()
         self._xml_search_next()
 
     def _xml_search_next(self):
@@ -221,7 +227,6 @@ class MainWindow(QMainWindow):
             item.setBackground(0, QBrush())
             xui_item = item.data(0, Qt.UserRole)
 
-            # Keep green color for imported roots, otherwise default FG
             fg_color = QColor("#00FF00") if xui_item and getattr(xui_item, 'is_imported_root', False) else QColor(
                 CONFIG["ui_colors"]["window_text"])
             item.setForeground(0, QBrush(fg_color))
@@ -251,40 +256,44 @@ class MainWindow(QMainWindow):
         self.current_selected_item = item
         self.inspector.set_item(item)
         if item:
-            # Auto-switch to the correct XML tab for the selected item
             fname = getattr(item, 'source_file', 'layout.xml')
             for i in range(self.code_tabs.count()):
                 if self.code_tabs.tabText(i) == fname:
                     self.code_tabs.setCurrentIndex(i)
                     break
-        self._refresh_code_view()
+        self._queue_refresh()
 
-    def _refresh_code_view(self, _ignored=None):
+    def _queue_refresh(self, _ignored=None):
+        self.code_refresh_timer.start()
+
+    def _do_refresh_code_view(self):
         if not self.canvas.root_container_instance:
             self.code_tabs.clear()
             self.code_editors.clear()
+            self.compiled_results.clear()
             return
 
-        # Compiler now returns a Dictionary of multiple files!
-        results = XUICompiler.generate_source(self.canvas.root_container_instance, self.current_selected_item)
+        # Heavy compilation only runs when dragging stops
+        self.compiled_results = XUICompiler.generate_source(self.canvas.root_container_instance,
+                                                            self.current_selected_item)
 
         # Remove stale tabs
         for fname in list(self.code_editors.keys()):
-            if fname not in results:
+            if fname not in self.compiled_results:
                 editor = self.code_editors.pop(fname)
                 idx = self.code_tabs.indexOf(editor)
                 self.code_tabs.removeTab(idx)
                 editor.deleteLater()
 
-        # Update/Create tabs
-        for fname, (xml_str, selections) in results.items():
+        # Update text editors
+        for fname, (xml_str, selections) in self.compiled_results.items():
             if fname not in self.code_editors:
                 editor = QTextEdit()
                 editor.setFont(QFont("Consolas", 10))
                 editor.setReadOnly(True)
                 editor.setStyleSheet(
                     f"background-color: {CONFIG['ui_colors']['tree_bg']}; color: {CONFIG['ui_colors']['window_text']};")
-                XMLHighlighter(editor.document())  # Attach highlighter
+                XMLHighlighter(editor.document())
                 self.code_tabs.addTab(editor, fname)
                 self.code_editors[fname] = editor
 
@@ -293,7 +302,14 @@ class MainWindow(QMainWindow):
             editor.setPlainText(xml_str)
             editor.verticalScrollBar().setValue(scroll_pos)
 
-            # Apply UI selections
+        self._apply_extra_selections()
+
+    def _apply_extra_selections(self):
+        """Applies syntax squigglies and active search matches to the editors instantly without recompiling."""
+        for fname, editor in self.code_editors.items():
+            if fname not in self.compiled_results: continue
+
+            selections = self.compiled_results[fname][1]
             extra_selections = []
             doc = editor.document()
 
@@ -325,13 +341,14 @@ class MainWindow(QMainWindow):
             warn_fmt.setUnderlineColor(QColor(CONFIG["syntax_colors"]["warning"]))
             for start, end, msgs in selections['warnings']: add_selection(start, end, warn_fmt)
 
-            if self.xml_search_input.text() and self.code_tabs.currentWidget() == editor:
+            search_text = self.xml_search_input.text()
+            if search_text and self.code_tabs.currentWidget() == editor:
                 search_fmt = QTextCharFormat()
                 search_fmt.setBackground(QColor(CONFIG["syntax_colors"]["search_bg"]))
                 search_fmt.setForeground(QColor(CONFIG["syntax_colors"]["search_fg"]))
                 cursor = QTextCursor(doc)
                 while not cursor.isNull() and not cursor.atEnd():
-                    cursor = doc.find(self.xml_search_input.text(), cursor)
+                    cursor = doc.find(search_text, cursor)
                     if not cursor.isNull():
                         sel = QTextEdit.ExtraSelection()
                         sel.cursor, sel.format = cursor, search_fmt
@@ -347,6 +364,7 @@ class MainWindow(QMainWindow):
         self.current_selected_item = None
         self.code_tabs.clear()
         self.code_editors.clear()
+        self.compiled_results.clear()
 
     def _set_texture_folder(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Viewer Textures", TextureManager.get().base_path)
@@ -365,7 +383,7 @@ class MainWindow(QMainWindow):
             self._new_layout()
             self._parse_xml_node(tree.getroot(), parent_item=None, current_file=base_filename)
             self.scene_tree.refresh_tree()
-            self._refresh_code_view()
+            self._queue_refresh()
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to parse XUI file:\n{str(e)}")
 
@@ -454,7 +472,7 @@ class MainWindow(QMainWindow):
                                                  current_file=current_file)
             if created_child: prev_child = created_child
 
-        # RECURSIVE FILE NESTING: If this widget links a filename, load that XML as a child!
+        # RECURSIVE FILE NESTING
         if "filename" in attributes and self.current_working_dir:
             ref_file = attributes["filename"]
             full_path = os.path.join(self.current_working_dir, ref_file)
