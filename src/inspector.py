@@ -45,7 +45,6 @@ class PropertyInspector(QWidget):
         attrs = self.current_xui_item.attributes
         schema = self._get_item_schema(self.current_xui_item.tag_name)
 
-        # Group attributes logically based on Second Life inheritance schemas
         groups = {}
         for k, v in attrs.items():
             meta = schema.get(k, UNIVERSAL_ATTRIBUTES.get(k, {"group": "Custom Attributes", "type": "str"}))
@@ -54,7 +53,6 @@ class PropertyInspector(QWidget):
                 groups[grp] = []
             groups[grp].append((k, v, meta))
 
-        # Build collapsible form sections for each group (e.g., LLView, LLUICtrl, LLButton)
         for grp_name, items in sorted(groups.items()):
             grp_box = QGroupBox(grp_name)
             grp_layout = QFormLayout(grp_box)
@@ -85,15 +83,20 @@ class PropertyInspector(QWidget):
             return
         self.current_xui_item.attributes[key] = val_str
 
-        # Instantly update bounding boxes on the canvas if coordinate dimensions change
+        # Update bounding boxes and trigger layout logic seamlessly
         if key in ["left", "top", "width", "height"]:
             try:
                 if key == "left":
                     self.current_xui_item.setX(float(val_str))
+                    self.current_xui_item.sync_attributes_to_geometry()
                 elif key == "top":
                     self.current_xui_item.setY(float(val_str))
-                elif key in ["width", "height"]:
-                    self.current_xui_item.sync_geometry_to_attributes()
+                    self.current_xui_item.sync_attributes_to_geometry()
+                elif key == "width":
+                    self.current_xui_item.resize_item(float(val_str), self.current_xui_item.rect().height())
+                elif key == "height":
+                    self.current_xui_item.resize_item(self.current_xui_item.rect().width(), float(val_str))
+
                 self.current_xui_item.scene().update()
             except ValueError:
                 pass

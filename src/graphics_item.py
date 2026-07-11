@@ -58,9 +58,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
         except ValueError:
             self.setRect(0, 0, 100, 20)
 
-        if self.tag_name == "tab_container":
-            self.update_tabs()
-
     def sync_attributes_to_geometry(self):
         rect = self.rect()
         pos = self.pos()
@@ -68,6 +65,60 @@ class XUIGraphicsItem(QGraphicsRectItem):
         self.attributes["height"] = str(int(rect.height()))
         self.attributes["left"] = str(int(pos.x()))
         self.attributes["top"] = str(int(pos.y()))
+
+    def resize_item(self, new_w, new_h):
+        """
+        Calculates geometric deltas and cascades resize events to child elements
+        based strictly on their SL 'follows' attribute anchoring rules.
+        """
+        old_w = self.rect().width()
+        old_h = self.rect().height()
+        dw = new_w - old_w
+        dh = new_h - old_h
+
+        if dw == 0 and dh == 0:
+            return
+
+        self.setRect(0, 0, new_w, new_h)
+        self.sync_attributes_to_geometry()
+
+        for child in self.child_xui_items:
+            follows_str = child.attributes.get("follows", "left|top").lower()
+            if follows_str == "all":
+                follows = ["left", "top", "right", "bottom"]
+            else:
+                follows = follows_str.split("|")
+
+            cx = child.x()
+            cy = child.y()
+            cw = child.rect().width()
+            ch = child.rect().height()
+
+            child_dw = 0
+            child_dh = 0
+            move_x = 0
+            move_y = 0
+
+            # Horizontal Follows Math
+            if "left" in follows and "right" in follows:
+                child_dw = dw
+            elif "right" in follows and "left" not in follows:
+                move_x = dw
+
+            # Vertical Follows Math
+            if "top" in follows and "bottom" in follows:
+                child_dh = dh
+            elif "bottom" in follows and "top" not in follows:
+                move_y = dh
+
+            # Reposition anchored elements
+            if move_x != 0 or move_y != 0:
+                child.setPos(cx + move_x, cy + move_y)
+                child.sync_attributes_to_geometry()
+
+            # Resize nested scaled elements
+            if child_dw != 0 or child_dh != 0:
+                child.resize_item(cw + child_dw, ch + child_dh)
 
     def update_tabs(self):
         """Forces tab panels to fit the container and hides inactive tabs."""
@@ -90,12 +141,10 @@ class XUIGraphicsItem(QGraphicsRectItem):
             tab.setPos(0, tab_height)
             tab.attributes["left"] = "0"
             tab.attributes["top"] = str(tab_height)
-            tab.attributes["width"] = container_w
-            tab.attributes["height"] = container_h
 
-            # Update rect without triggering recursive update_tabs
             try:
-                tab.setRect(0, 0, float(container_w), float(container_h))
+                # Use our new layout solver to correctly push scale events through active tabs
+                tab.resize_item(float(container_w), float(container_h))
             except ValueError:
                 pass
 
@@ -248,7 +297,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 painter.setPen(QPen(QColor("#3d3d3d"), 1))
                 painter.drawRect(rect)
 
-            # Hide redundant panel label if it is acting as a tab body
             is_tab_body = isinstance(self.parentItem(),
                                      XUIGraphicsItem) and self.parentItem().tag_name == "tab_container"
             if self.attributes.get("label") and not is_tab_body:
@@ -298,7 +346,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
         if event.button() == Qt.LeftButton:
             pos = event.pos()
 
-            # --- TAB HEADER CLICK INTERCEPTION ---
             if self.tag_name == "tab_container":
                 tab_height = int(self.attributes.get("tab_height", 21))
                 if pos.y() <= tab_height:
@@ -318,7 +365,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                                 self.active_tab_index = i
                                 self.update_tabs()
                                 self.scene().update()
-                                # Allow Qt to still visually select the container
                                 super().mousePressEvent(event)
                                 return
                             tab_x += calc_width
@@ -358,11 +404,17 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, event):
         if self.resizing and self.resize_dir == "BR":
-            new_w = max(20, event.pos().x())
-            new_h = max(15, event.pos().y())
-            self.setRect(0, 0, new_w, new_h)
-            self.sync_attributes_to_geometry()
-            self.scene().update()
+            # CRITICAL FIX: Snap resized bounding box strictly to the 10x10 grid
+            raw_w = event.pos().x()
+            raw_h = event.pos().y()
+            snapped_w = max(20.0, round(raw_w / 10.0) * 10.0)
+            snapped_h = max(20.0, round(raw_h / 10.0) * 10.0)
+
+            # Check if dimensions actually snapped to a new 10px increment to prevent useless repaints
+            if snapped_w != self.rect().width() or snapped_h != self.rect().height():
+                self.resize_item(snapped_w, snapped_h)
+                self.scene().update()
+
             event.accept()
         else:
             super().mouseMoveEvent(event)
