@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QAbstractItemView
 )
@@ -6,6 +6,9 @@ from graphics_item import XUIGraphicsItem
 
 
 class SceneTreeWidget(QTreeWidget):
+    # Added: Signal emitted whenever the tree fully rebuilds itself
+    tree_refreshed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderLabel("XUI DOM Hierarchy")
@@ -34,6 +37,7 @@ class SceneTreeWidget(QTreeWidget):
             self.expandAll()
 
         self.syncing = False
+        self.tree_refreshed.emit()  # Notify that tree is rebuilt and ready for search highlights
 
     def _add_node_to_tree(self, xui_item, parent_tree_item):
         name_str = xui_item.attributes.get("name", xui_item.tag_name)
@@ -88,8 +92,6 @@ class SceneTreeWidget(QTreeWidget):
         pos_mode = self.dropIndicatorPosition()
 
         if pos_mode == QAbstractItemView.OnItem:
-
-            # --- TAB CONTAINER DROP REDIRECTION ---
             if target_xui.tag_name == "tab_container" and dragged_xui.tag_name not in ["panel", "layout_panel"]:
                 tabs = [c for c in target_xui.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
                 if tabs:

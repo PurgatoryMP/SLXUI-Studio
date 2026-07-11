@@ -1,9 +1,13 @@
 import xml.etree.ElementTree as ET
 from PySide6.QtCore import Qt, QPointF, QMimeData
-from PySide6.QtGui import QFont, QAction, QDrag
+from PySide6.QtGui import (
+    QFont, QAction, QDrag, QTextDocument, QTextCursor,
+    QTextCharFormat, QColor, QBrush
+)
 from PySide6.QtWidgets import (
-    QMainWindow, QSplitter, QTreeWidget, QTreeWidgetItem,
-    QTextEdit, QFileDialog, QMessageBox, QWidget, QVBoxLayout, QLabel
+    QMainWindow, QSplitter, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
+    QTextEdit, QFileDialog, QMessageBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton
 )
 from registry import XUI_REGISTRY
 from textures import TextureManager
@@ -38,6 +42,8 @@ class MainWindow(QMainWindow):
         self.resize(1600, 950)
 
         self.current_selected_item = None
+        self.tree_search_matches = []
+        self.tree_search_idx = -1
 
         self._setup_menus()
         self._setup_ui()
@@ -83,12 +89,35 @@ class MainWindow(QMainWindow):
         self.canvas = CanvasContainer()
         center_splitter.addWidget(self.canvas)
 
+        # ----------------------------------------------------
+        # LIVE XML SOURCE + FIND FIELD
+        # ----------------------------------------------------
         code_container = QWidget()
         code_layout = QVBoxLayout(code_container)
         code_layout.setContentsMargins(0, 0, 0, 0)
-        code_layout.addWidget(QLabel("<b>Live Second Life XML Source:</b>"))
 
-        # Swapped to QTextEdit to support HTML syntax highlighting
+        xml_header_layout = QHBoxLayout()
+        xml_header_layout.addWidget(QLabel("<b>Live Second Life XML Source:</b>"))
+        xml_header_layout.addStretch()
+
+        self.xml_search_input = QLineEdit()
+        self.xml_search_input.setPlaceholderText("Find in XML...")
+        self.xml_search_input.setFixedWidth(150)
+        self.xml_search_input.textChanged.connect(self._on_xml_search_changed)
+        xml_header_layout.addWidget(self.xml_search_input)
+
+        xml_prev_btn = QPushButton("▲")
+        xml_prev_btn.setFixedWidth(30)
+        xml_prev_btn.clicked.connect(self._xml_search_prev)
+        xml_header_layout.addWidget(xml_prev_btn)
+
+        xml_next_btn = QPushButton("▼")
+        xml_next_btn.setFixedWidth(30)
+        xml_next_btn.clicked.connect(self._xml_search_next)
+        xml_header_layout.addWidget(xml_next_btn)
+
+        code_layout.addLayout(xml_header_layout)
+
         self.code_view = QTextEdit()
         self.code_view.setFont(QFont("Consolas", 10))
         self.code_view.setReadOnly(True)
@@ -100,10 +129,35 @@ class MainWindow(QMainWindow):
 
         right_splitter = QSplitter(Qt.Vertical)
 
+        # ----------------------------------------------------
+        # DOM HIERARCHY + FIND FIELD
+        # ----------------------------------------------------
         tree_container = QWidget()
         tree_layout = QVBoxLayout(tree_container)
         tree_layout.setContentsMargins(0, 0, 0, 0)
-        tree_layout.addWidget(QLabel("<b>XUI DOM Hierarchy / Context Menu:</b>"))
+
+        tree_header_layout = QHBoxLayout()
+        tree_header_layout.addWidget(QLabel("<b>XUI DOM Hierarchy:</b>"))
+        tree_header_layout.addStretch()
+
+        self.tree_search_input = QLineEdit()
+        self.tree_search_input.setPlaceholderText("Find node...")
+        self.tree_search_input.setFixedWidth(120)
+        self.tree_search_input.textChanged.connect(self._on_tree_search_changed)
+        tree_header_layout.addWidget(self.tree_search_input)
+
+        tree_prev_btn = QPushButton("▲")
+        tree_prev_btn.setFixedWidth(30)
+        tree_prev_btn.clicked.connect(self._tree_search_prev)
+        tree_header_layout.addWidget(tree_prev_btn)
+
+        tree_next_btn = QPushButton("▼")
+        tree_next_btn.setFixedWidth(30)
+        tree_next_btn.clicked.connect(self._tree_search_next)
+        tree_header_layout.addWidget(tree_next_btn)
+
+        tree_layout.addLayout(tree_header_layout)
+
         self.scene_tree = SceneTreeWidget()
         self.scene_tree.set_canvas(self.canvas)
         tree_layout.addWidget(self.scene_tree)
@@ -125,9 +179,106 @@ class MainWindow(QMainWindow):
         self.canvas.item_selected_signal.connect(self._on_item_selected)
         self.canvas.item_modified_signal.connect(self._refresh_code_view)
         self.inspector.property_changed_signal.connect(self._refresh_code_view)
+        # Re-apply tree search highlights after canvas drags refresh the tree
+        self.scene_tree.tree_refreshed.connect(self._reapply_tree_search)
 
+    # ------------------------------------------------------------------------
+    # SEARCH & HIGHLIGHT: XML SOURCE
+    # ------------------------------------------------------------------------
+    def _on_xml_search_changed(self, text):
+        self._highlight_all_xml(text)
+        self._xml_search_next()
+
+    def _highlight_all_xml(self, text):
+        self.code_view.setExtraSelections([])
+        if not text:
+            return
+
+        selections = []
+        doc = self.code_view.document()
+        cursor = QTextCursor(doc)
+
+        format = QTextCharFormat()
+        format.setBackground(QColor("#FFFF00"))
+        format.setForeground(QColor("#000000"))
+
+        while not cursor.isNull() and not cursor.atEnd():
+            cursor = doc.find(text, cursor)
+            if not cursor.isNull():
+                sel = QTextEdit.ExtraSelection()
+                sel.cursor = cursor
+                sel.format = format
+                selections.append(sel)
+
+        self.code_view.setExtraSelections(selections)
+
+    def _xml_search_next(self):
+        text = self.xml_search_input.text()
+        if not text: return
+        if not self.code_view.find(text):
+            # Wrap around to start
+            cursor = self.code_view.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            self.code_view.setTextCursor(cursor)
+            self.code_view.find(text)
+
+    def _xml_search_prev(self):
+        text = self.xml_search_input.text()
+        if not text: return
+        options = QTextDocument.FindBackward
+        if not self.code_view.find(text, options):
+            # Wrap around to end
+            cursor = self.code_view.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.code_view.setTextCursor(cursor)
+            self.code_view.find(text, options)
+
+    # ------------------------------------------------------------------------
+    # SEARCH & HIGHLIGHT: DOM HIERARCHY
+    # ------------------------------------------------------------------------
+    def _on_tree_search_changed(self, text):
+        self.tree_search_matches = []
+        self.tree_search_idx = -1
+
+        it = QTreeWidgetItemIterator(self.scene_tree)
+        while it.value():
+            item = it.value()
+            # Reset colors to default
+            item.setBackground(0, QBrush())
+            item.setForeground(0, QBrush())
+
+            if text and text.lower() in item.text(0).lower():
+                item.setBackground(0, QBrush(QColor("#FFFF00")))
+                item.setForeground(0, QBrush(QColor("#000000")))
+                self.tree_search_matches.append(item)
+            it += 1
+
+        if self.tree_search_matches:
+            self._tree_search_next()
+
+    def _reapply_tree_search(self):
+        """Automatically reapplies search highlights if a drag-drop resets the DOM Tree."""
+        if hasattr(self, 'tree_search_input') and self.tree_search_input.text():
+            self._on_tree_search_changed(self.tree_search_input.text())
+
+    def _tree_search_next(self):
+        if not self.tree_search_matches: return
+        self.tree_search_idx = (self.tree_search_idx + 1) % len(self.tree_search_matches)
+        item = self.tree_search_matches[self.tree_search_idx]
+        self.scene_tree.setCurrentItem(item)
+        self.scene_tree.scrollToItem(item)
+
+    def _tree_search_prev(self):
+        if not self.tree_search_matches: return
+        self.tree_search_idx = (self.tree_search_idx - 1) % len(self.tree_search_matches)
+        item = self.tree_search_matches[self.tree_search_idx]
+        self.scene_tree.setCurrentItem(item)
+        self.scene_tree.scrollToItem(item)
+
+    # ------------------------------------------------------------------------
+    # CORE LOGIC
+    # ------------------------------------------------------------------------
     def _on_item_selected(self, item):
-        """Routes selection state to the inspector and triggers XML highlighting."""
         self.current_selected_item = item
         self.inspector.set_item(item)
         self._refresh_code_view()
@@ -135,6 +286,9 @@ class MainWindow(QMainWindow):
     def _refresh_code_view(self, _ignored=None):
         xml_str = XUICompiler.generate_rich_xml(self.canvas.root_container_instance, self.current_selected_item)
         self.code_view.setHtml(xml_str)
+        # Re-apply XML yellow highlight on code refresh
+        if hasattr(self, 'xml_search_input') and self.xml_search_input.text():
+            self._highlight_all_xml(self.xml_search_input.text())
 
     def _new_layout(self):
         self.canvas.clear_canvas()
@@ -171,7 +325,6 @@ class MainWindow(QMainWindow):
     def _parse_xml_node(self, element, parent_item=None, last_sibling_item=None):
         tag_name = element.tag
 
-        # CRITICAL FIX #1: Preserve dot-tags instead of discarding them
         if "." in tag_name:
             if parent_item and isinstance(parent_item, XUIGraphicsItem):
                 parent_item.non_visual_children.append({
@@ -244,7 +397,6 @@ class MainWindow(QMainWindow):
 
         item = XUIGraphicsItem(tag_name, attributes)
 
-        # CRITICAL FIX #1 (Part B): Capture raw inner text
         if element.text and element.text.strip():
             item.inner_text = element.text.strip()
 
@@ -274,7 +426,6 @@ class MainWindow(QMainWindow):
                                                    "XML Files (*.xml);;All Files (*)")
         if file_path:
             try:
-                # Save plain text without HTML highlighting wrappers
                 xml_content = XUICompiler.generate_plain_xml(self.canvas.root_container_instance)
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(xml_content)

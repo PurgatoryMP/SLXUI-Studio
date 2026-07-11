@@ -3,34 +3,42 @@ from PIL import Image
 from PySide6.QtCore import QRect, QRectF
 from PySide6.QtGui import QImage, QPixmap, QPainter
 
+
 class TextureManager:
-    """Singleton texture loader for PNG, TGA, and J2C files."""
+    """Singleton texture loader that dynamically indexes ALL viewer textures."""
     _instance = None
 
-    # Point this to your copy of /viewer/indra/newview/skins/default/textures
-    xui_skin_textures = "G:/viewer/indra/newview/skins/default/textures"
-
-    def __init__(self):
-        self.base_path = self.xui_skin_textures
+    def __init__(self, skin_base_path="G:/viewer/indra/newview/skins/default/textures"):
+        self.base_path = skin_base_path
         self.cache = {}
-        self.texture_map = {
-            "floater_bg": "windows/Window_Background.png",
-            "floater_header": "windows/Dragbar.png",
-            "button_off": "widgets/PushButton_Off.png",
-            "button_on": "widgets/PushButton_On.png",
-            "button_press": "widgets/PushButton_Press.png",
-            "checkbox_off": "widgets/Checkbox_Off.png",
-            "checkbox_on": "widgets/Checkbox_On.png",
-            "line_editor": "widgets/TextField_Off.png",
-            "combo_box": "widgets/ComboButton_Off.png",
-            "panel_bg": "windows/Inspector_Background.png",
-            "tab_top_left_off": "containers/TabTop_Left_Off.png",
-            "tab_top_left_on": "containers/TabTop_Left_Selected.png",
-            "tab_top_mid_off": "containers/TabTop_Middle_Off.png",
-            "tab_top_mid_on": "containers/TabTop_Middle_Selected.png",
-            "tab_top_right_off": "containers/TabTop_Right_Off.png",
-            "tab_top_right_on": "containers/TabTop_Right_Selected.png",
-        }
+        self.texture_index = {}
+        self._build_index()
+
+    def set_base_path(self, path):
+        self.base_path = path
+        self.cache.clear()
+        self._build_index()
+
+    def _build_index(self):
+        """Recursively scans the texture directory to build a lookup index."""
+        self.texture_index.clear()
+        if not os.path.exists(self.base_path):
+            return
+
+        for root, dirs, files in os.walk(self.base_path):
+            for file in files:
+                if file.lower().endswith(('.png', '.tga', '.j2c')):
+                    # Store without extension for SL XML matching (e.g. 'PushButton_Off')
+                    base_name = os.path.splitext(file)[0]
+                    rel_path = os.path.relpath(os.path.join(root, file), self.base_path)
+
+                    self.texture_index[base_name] = rel_path
+                    self.texture_index[file] = rel_path
+
+        # Fallbacks for generic tags used internally by the canvas
+        self.texture_index["floater_bg"] = "windows/Window_Background.png"
+        self.texture_index["floater_header"] = "windows/Dragbar.png"
+        self.texture_index["panel_bg"] = "windows/Inspector_Background.png"
 
     @classmethod
     def get(cls):
@@ -38,17 +46,27 @@ class TextureManager:
             cls._instance = TextureManager()
         return cls._instance
 
-    def set_base_path(self, path):
-        self.base_path = path
-        self.cache.clear()
+    def get_pixmap(self, texture_key):
+        if not texture_key:
+            return None
 
-    def get_pixmap(self, texture_key_or_path):
-        rel_path = self.texture_map.get(texture_key_or_path, texture_key_or_path)
+        # Try to resolve exactly as provided, or from our built index
+        rel_path = self.texture_index.get(texture_key, texture_key)
         full_path = os.path.join(self.base_path, rel_path)
+
         if full_path in self.cache:
             return self.cache[full_path]
+
+        # If still missing, try appending standard extensions
+        if not os.path.exists(full_path):
+            for ext in ['.png', '.tga']:
+                if os.path.exists(full_path + ext):
+                    full_path = full_path + ext
+                    break
+
         if not os.path.exists(full_path):
             return None
+
         try:
             pil_img = Image.open(full_path).convert("RGBA")
             data = pil_img.tobytes("raw", "RGBA")
@@ -59,6 +77,7 @@ class TextureManager:
         except Exception as e:
             print(f"[TextureManager] Failed to load {full_path}: {e}")
             return None
+
 
 def draw_9_slice(painter: QPainter, pixmap: QPixmap, target_rect: QRectF,
                  border_left=6, border_top=6, border_right=6, border_bottom=6):

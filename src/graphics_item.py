@@ -186,7 +186,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
         tm = TextureManager.get()
 
         if self.tag_name in ["floater", "multi_floater"]:
-            bg_pix = tm.get_pixmap("floater_bg")
+            bg_attr = self.attributes.get("image_background", "floater_bg")
+            bg_pix = tm.get_pixmap(bg_attr)
             if bg_pix:
                 draw_9_slice(painter, bg_pix, rect, 8, 20, 8, 8)
             else:
@@ -204,7 +205,9 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.drawText(header_rect.adjusted(8, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, title)
 
         elif self.tag_name in ["button", "flyout_button", "split_button"]:
-            btn_pix = tm.get_pixmap("button_off")
+            # NOW READING DYNAMICALLY FROM ATTRIBUTES
+            img_attr = self.attributes.get("image_unselected", "PushButton_Off")
+            btn_pix = tm.get_pixmap(img_attr)
             if btn_pix:
                 draw_9_slice(painter, btn_pix, rect, 6, 6, 6, 6)
             else:
@@ -215,7 +218,10 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.drawText(rect, Qt.AlignCenter, self.attributes.get("label", "Button"))
 
         elif self.tag_name in ["line_editor", "search_editor", "spinner", "combo_box"]:
-            edit_pix = tm.get_pixmap("line_editor") if self.tag_name != "combo_box" else tm.get_pixmap("combo_box")
+            default_tex = "TextField_Off" if self.tag_name != "combo_box" else "ComboButton_Off"
+            img_attr = self.attributes.get("image_unselected", default_tex)
+            edit_pix = tm.get_pixmap(img_attr)
+
             if edit_pix:
                 draw_9_slice(painter, edit_pix, rect, 4, 4, 4, 4)
             else:
@@ -230,7 +236,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.drawText(rect.adjusted(6, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, text)
 
         elif self.tag_name == "check_box":
-            chk_pix = tm.get_pixmap("checkbox_off")
+            img_attr = self.attributes.get("image_unselected", "Checkbox_Off")
+            chk_pix = tm.get_pixmap(img_attr)
             chk_rect = QRectF(rect.x() + 2, rect.y() + (rect.height() - 14) / 2, 14, 14)
             if chk_pix:
                 painter.drawPixmap(chk_rect, chk_pix, QRectF(0, 0, chk_pix.width(), chk_pix.height()))
@@ -267,11 +274,13 @@ class XUIGraphicsItem(QGraphicsRectItem):
             tab_y = rect.y()
             for i, tab_label in enumerate(tabs):
                 if i == self.active_tab_index:
-                    tex_key = "tab_top_left_on" if i == 0 else (
-                        "tab_top_right_on" if i == len(tabs) - 1 else "tab_top_mid_on")
+                    def_tex = "TabTop_Left_Selected" if i == 0 else (
+                        "TabTop_Right_Selected" if i == len(tabs) - 1 else "TabTop_Middle_Selected")
+                    tex_key = self.attributes.get("tab_top_image_selected", def_tex)
                 else:
-                    tex_key = "tab_top_left_off" if i == 0 else (
-                        "tab_top_right_off" if i == len(tabs) - 1 else "tab_top_mid_off")
+                    def_tex = "TabTop_Left_Off" if i == 0 else (
+                        "TabTop_Right_Off" if i == len(tabs) - 1 else "TabTop_Middle_Off")
+                    tex_key = self.attributes.get("tab_top_image_unselected", def_tex)
 
                 tab_pix = tm.get_pixmap(tex_key)
                 min_w = int(self.attributes.get("tab_min_width", 60))
@@ -291,7 +300,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 tab_x += calc_width
 
         elif self.tag_name in ["panel", "layout_panel", "accordion"]:
-            panel_pix = tm.get_pixmap("panel_bg")
+            bg_attr = self.attributes.get("bg_color", "panel_bg")
+            panel_pix = tm.get_pixmap(bg_attr)
             if panel_pix:
                 draw_9_slice(painter, panel_pix, rect, 4, 4, 4, 4)
             else:
@@ -308,7 +318,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
         else:
             if self.tag_name == "text":
                 painter.setPen(QPen(QColor("#FFFFFF")))
-                painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, self.attributes.get("label", "Text Label"))
+                painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter,
+                                 self.attributes.get("label", "Text Label") or self.inner_text)
             else:
                 painter.fillRect(rect, QColor("#3a3a3a"))
                 painter.setPen(QPen(QColor("#555555"), 1))
