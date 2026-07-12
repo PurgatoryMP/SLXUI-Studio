@@ -83,13 +83,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
         self.setRect(0, 0, new_w, new_h)
         self.sync_attributes_to_geometry()
 
-        # DELEGATE TO SMART CONTAINERS FIRST
         if self.tag_name == "tab_container":
             self.update_tabs()
         elif self.tag_name == "layout_stack":
             self.update_layout_stack()
         else:
-            # Normal 'follows' cascade for raw items
             for child in self.child_xui_items:
                 follows_str = child.attributes.get("follows", "left|top").lower()
                 if follows_str == "all":
@@ -144,7 +142,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 pass
 
     def update_layout_stack(self):
-        """Forces layout panels to arrange linearly inside a layout stack, respecting XUI padding/borders."""
         if self.tag_name != "layout_stack": return
 
         orientation = self.attributes.get("orientation", "vertical")
@@ -173,9 +170,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 panel.resize_item(panel_w, stack_h)
                 current_x += panel.rect().width() + padding
 
-    # ------------------------------------------------------------------------
-    # RESTORED CHILD LOGIC
-    # ------------------------------------------------------------------------
     def add_child_item(self, child_item):
         if child_item not in self.child_xui_items:
             self.child_xui_items.append(child_item)
@@ -241,13 +235,34 @@ class XUIGraphicsItem(QGraphicsRectItem):
         painter.drawText(del_rect, Qt.AlignCenter, "X")
 
     # ------------------------------------------------------------------------
-    # EVENTS
+    # EVENTS (NEW [+] ICON SUPPORT)
     # ------------------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             pos = event.pos()
 
             if self.tag_name == "tab_container":
+
+                # Check if they clicked the [+] button
+                if hasattr(self, '_plus_btn_rect') and self._plus_btn_rect and self._plus_btn_rect.contains(pos):
+                    actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
+                    new_idx = len(actual_panels) + 1
+
+                    new_panel = XUIGraphicsItem("panel", {"label": f"New Tab {new_idx}", "name": f"tab_{new_idx}"})
+                    new_panel.source_file = self.source_file
+                    self.add_child_item(new_panel)
+
+                    self.active_tab_index = new_idx - 1
+                    self.update_tabs()
+
+                    if hasattr(self.scene(), 'canvas_container'):
+                        self.scene().canvas_container.item_modified_signal.emit(self)
+
+                    self.scene().update()
+                    event.accept()
+                    return
+
+                # Normal Tab Switching math (accounting for the active tab's wider width)
                 tab_height = int(self.attributes.get("tab_height", 21))
                 if pos.y() <= tab_height:
                     actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
@@ -260,7 +275,10 @@ class XUIGraphicsItem(QGraphicsRectItem):
                                                                                                        "Unnamed Tab")))
                             min_w = int(self.attributes.get("tab_min_width", 60))
                             max_w = int(self.attributes.get("tab_max_width", 150))
-                            calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20))
+
+                            is_active = (i == self.active_tab_index)
+                            extra_w = 20 if is_active else 0
+                            calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20)) + extra_w
 
                             if tab_x <= pos.x() <= tab_x + calc_width:
                                 self.active_tab_index = i
@@ -360,7 +378,7 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 self.update_layout_stack()
 
             if hasattr(self.scene(), 'canvas_container'):
-                self.scene().canvas_container.notify_item_changed(self)
+                self.scene().canvas_container.item_modified_signal.emit(self)
         super().mouseReleaseEvent(event)
 
     def itemChange(self, change, value):
@@ -389,7 +407,7 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 self.attributes["top"] = str(int(snapped_y))
 
             if hasattr(self.scene(), 'canvas_container') and self.scene().canvas_container:
-                self.scene().canvas_container.notify_item_changed(self)
+                self.scene().canvas_container.item_modified_signal.emit(self)
             return QPointF(snapped_x, snapped_y)
         return super().itemChange(change, value)
 
@@ -486,13 +504,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
             tab_height = int(self.attributes.get("tab_height", 21))
 
             actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
-            if not actual_panels:
-                tabs = ["Tab 1", "Tab 2", "Tab 3"]
-            else:
-                tabs = []
-                for child in actual_panels:
-                    tabs.append(child.attributes.get("label", child.attributes.get("title", child.attributes.get("name",
-                                                                                                                 "Unnamed Tab"))))
 
             body_rect = QRectF(rect.x(), rect.y() + tab_height, rect.width(), rect.height() - tab_height)
             if panel_pix:
@@ -504,32 +515,63 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
             tab_x = rect.x() + 2
             tab_y = rect.y()
-            for i, tab_label in enumerate(tabs):
-                if i == self.active_tab_index:
-                    def_tex = "TabTop_Left_Selected" if i == 0 else (
-                        "TabTop_Right_Selected" if i == len(tabs) - 1 else "TabTop_Middle_Selected")
-                    tex_key = self.attributes.get("tab_top_image_selected", def_tex)
-                else:
-                    def_tex = "TabTop_Left_Off" if i == 0 else (
-                        "TabTop_Right_Off" if i == len(tabs) - 1 else "TabTop_Middle_Off")
-                    tex_key = self.attributes.get("tab_top_image_unselected", def_tex)
+            self._plus_btn_rect = None
 
-                tab_pix = tm.get_pixmap(tex_key)
-                min_w = int(self.attributes.get("tab_min_width", 60))
-                max_w = int(self.attributes.get("tab_max_width", 150))
-                calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20))
-                t_rect = QRectF(tab_x, tab_y, calc_width, tab_height)
+            if not actual_panels:
+                # Provide a convenient button to create the first tab
+                t_rect = QRectF(tab_x, tab_y, 30, tab_height)
+                painter.fillRect(t_rect, QColor("#222"))
+                painter.setPen(QPen(QColor("#111"), 1))
+                painter.drawRect(t_rect)
+                painter.setPen(QPen(QColor("#00FF00")))
+                painter.drawText(t_rect, Qt.AlignCenter, "+")
+                self._plus_btn_rect = t_rect
+            else:
+                for i, tab_panel in enumerate(actual_panels):
+                    tab_label = tab_panel.attributes.get("label", tab_panel.attributes.get("title",
+                                                                                           tab_panel.attributes.get(
+                                                                                               "name", "Unnamed Tab")))
+                    is_active = (i == self.active_tab_index)
 
-                if tab_pix:
-                    draw_9_slice(painter, tab_pix, t_rect, 4, 4, 4, 4)
-                else:
-                    painter.fillRect(t_rect, QColor("#444" if i == self.active_tab_index else "#222"))
-                    painter.setPen(QPen(QColor("#111"), 1))
-                    painter.drawRect(t_rect)
+                    if is_active:
+                        def_tex = "TabTop_Left_Selected" if i == 0 else (
+                            "TabTop_Right_Selected" if i == len(actual_panels) - 1 else "TabTop_Middle_Selected")
+                        tex_key = self.attributes.get("tab_top_image_selected", def_tex)
+                    else:
+                        def_tex = "TabTop_Left_Off" if i == 0 else (
+                            "TabTop_Right_Off" if i == len(actual_panels) - 1 else "TabTop_Middle_Off")
+                        tex_key = self.attributes.get("tab_top_image_unselected", def_tex)
 
-                painter.setPen(QPen(QColor("#FFFFFF" if i == self.active_tab_index else "#AAAAAA")))
-                painter.drawText(t_rect, Qt.AlignCenter, tab_label)
-                tab_x += calc_width
+                    tab_pix = tm.get_pixmap(tex_key)
+                    min_w = int(self.attributes.get("tab_min_width", 60))
+                    max_w = int(self.attributes.get("tab_max_width", 150))
+
+                    extra_w = 20 if is_active else 0
+                    calc_width = max(min_w, min(max_w, len(tab_label) * 7 + 20)) + extra_w
+                    t_rect = QRectF(tab_x, tab_y, calc_width, tab_height)
+
+                    if tab_pix:
+                        draw_9_slice(painter, tab_pix, t_rect, 4, 4, 4, 4)
+                    else:
+                        painter.fillRect(t_rect, QColor("#444" if is_active else "#222"))
+                        painter.setPen(QPen(QColor("#111"), 1))
+                        painter.drawRect(t_rect)
+
+                    text_rect = QRectF(tab_x, tab_y, calc_width - extra_w, tab_height)
+                    painter.setPen(QPen(QColor("#FFFFFF" if is_active else "#AAAAAA")))
+                    painter.drawText(text_rect, Qt.AlignCenter, tab_label)
+
+                    # Draw (+) button only on active tab
+                    if is_active:
+                        plus_rect = QRectF(tab_x + calc_width - 20, tab_y + (tab_height - 14) / 2, 14, 14)
+                        painter.fillRect(plus_rect, QColor("#222"))
+                        painter.setPen(QPen(QColor("#555"), 1))
+                        painter.drawRect(plus_rect)
+                        painter.setPen(QPen(QColor("#00FF00")))
+                        painter.drawText(plus_rect, Qt.AlignCenter, "+")
+                        self._plus_btn_rect = plus_rect
+
+                    tab_x += calc_width
 
         elif self.tag_name in ["panel", "layout_panel", "accordion", "layout_stack"]:
             bg_attr = self.attributes.get("bg_color", "panel_bg")

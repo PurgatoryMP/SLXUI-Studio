@@ -141,7 +141,7 @@ class SceneTreeWidget(QTreeWidget):
             dragged_xui.sync_attributes_to_geometry()
 
         if self.canvas_container:
-            self.canvas_container.notify_item_changed(dragged_xui)
+            self.canvas_container.item_modified_signal.emit(dragged_xui)
             self.canvas_container.scene.update()
 
         event.setDropAction(Qt.IgnoreAction)

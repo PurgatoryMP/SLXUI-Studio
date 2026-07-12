@@ -177,15 +177,24 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_splitter)
         main_splitter.setSizes([250, 950, 400])
 
-        # Hook signals into the debounce timer instead of immediate execution
+        # --- UPDATED SIGNAL ROUTING ---
         self.canvas.item_selected_signal.connect(self._on_item_selected)
-        self.canvas.item_modified_signal.connect(self._queue_refresh)
+
+        # Route canvas modifications to our new custom synchronization function
+        self.canvas.item_modified_signal.connect(self._on_canvas_item_modified)
+
         self.inspector.property_changed_signal.connect(self._queue_refresh)
         self.scene_tree.tree_refreshed.connect(self._reapply_tree_search)
 
     def _open_preferences(self):
         dlg = PreferencesDialog(self)
         dlg.exec()
+
+    def _on_canvas_item_modified(self, item):
+        self._queue_refresh()
+        # Only refresh the inspector if the item being moved is the one currently visible in the properties window
+        if item and item == self.current_selected_item:
+            self.inspector.refresh_values()
 
     # --- XML SEARCH LOGIC (Decoupled from XML Compiler) ---
     def _get_active_editor(self):
