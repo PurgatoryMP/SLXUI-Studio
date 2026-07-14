@@ -66,9 +66,32 @@ class XUIGraphicsItem(QGraphicsRectItem):
         self.attributes["width"] = str(int(rect.width()))
         self.attributes["height"] = str(int(rect.height()))
 
-        if "left_delta" not in self.attributes and "left_pad" not in self.attributes:
+        parent = self.parentItem()
+        parent_w = parent.rect().width() if isinstance(parent, XUIGraphicsItem) else 500
+        parent_h = parent.rect().height() if isinstance(parent, XUIGraphicsItem) else 500
+
+        # Maintain integrity of explicit relative 'right' layouts instead of dumping conflicting 'left' tokens
+        if "right" in self.attributes:
+            try:
+                if int(self.attributes["right"]) <= 0:
+                    self.attributes["right"] = str(int((pos.x() + rect.width()) - parent_w))
+                else:
+                    self.attributes["right"] = str(int(pos.x() + rect.width()))
+            except ValueError:
+                self.attributes["right"] = str(int(pos.x() + rect.width()))
+        elif "left_delta" not in self.attributes and "left_pad" not in self.attributes:
             self.attributes["left"] = str(int(pos.x()))
-        if "top_delta" not in self.attributes and "top_pad" not in self.attributes:
+
+        # Maintain integrity of explicit relative 'bottom' layouts instead of dumping conflicting 'top' tokens
+        if "bottom" in self.attributes:
+            try:
+                if int(self.attributes["bottom"]) <= 0:
+                    self.attributes["bottom"] = str(int((pos.y() + rect.height()) - parent_h))
+                else:
+                    self.attributes["bottom"] = str(int(pos.y() + rect.height()))
+            except ValueError:
+                self.attributes["bottom"] = str(int(pos.y() + rect.height()))
+        elif "top_delta" not in self.attributes and "top_pad" not in self.attributes:
             self.attributes["top"] = str(int(pos.y()))
 
     def resize_item(self, new_w, new_h):
@@ -90,20 +113,25 @@ class XUIGraphicsItem(QGraphicsRectItem):
         else:
             for child in self.child_xui_items:
                 follows_str = child.attributes.get("follows", "left|top").lower()
-                if follows_str == "all":
+
+                # Normalize spaces, commas, and pipes for resilient validation token parsing
+                normalized_follows = follows_str.replace(" ", "|").replace(",", "|")
+                follows = [f.strip() for f in normalized_follows.split("|") if f.strip()]
+
+                if "all" in follows:
                     follows = ["left", "top", "right", "bottom"]
-                else:
-                    follows = follows_str.split("|")
 
                 cx, cy = child.x(), child.y()
                 cw, ch = child.rect().width(), child.rect().height()
                 child_dw = child_dh = move_x = move_y = 0
 
+                # Validate horizontal layout scaling matrices
                 if "left" in follows and "right" in follows:
                     child_dw = dw
                 elif "right" in follows and "left" not in follows:
                     move_x = dw
 
+                # Validate vertical layout scaling matrices
                 if "top" in follows and "bottom" in follows:
                     child_dh = dh
                 elif "bottom" in follows and "top" not in follows:
@@ -234,16 +262,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
         painter.setFont(QFont("SansSerif", 8, QFont.Bold))
         painter.drawText(del_rect, Qt.AlignCenter, "X")
 
-    # ------------------------------------------------------------------------
-    # EVENTS (NEW [+] ICON SUPPORT)
-    # ------------------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             pos = event.pos()
 
             if self.tag_name == "tab_container":
-
-                # Check if they clicked the [+] button
                 if hasattr(self, '_plus_btn_rect') and self._plus_btn_rect and self._plus_btn_rect.contains(pos):
                     actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
                     new_idx = len(actual_panels) + 1
@@ -262,7 +285,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                     event.accept()
                     return
 
-                # Normal Tab Switching math (accounting for the active tab's wider width)
                 tab_height = int(self.attributes.get("tab_height", 21))
                 if pos.y() <= tab_height:
                     actual_panels = [c for c in self.child_xui_items if c.tag_name in ["panel", "layout_panel"]]
@@ -392,14 +414,34 @@ class XUIGraphicsItem(QGraphicsRectItem):
                                                                    XUIGraphicsItem) and self in parent.child_xui_items else -1
             prev_sib = parent.child_xui_items[idx - 1] if idx > 0 else None
 
-            if "left_delta" in self.attributes and prev_sib:
+            # Calculate and update 'right' safely if it exists, preserving layout intent
+            if "right" in self.attributes:
+                parent_w = parent.rect().width() if isinstance(parent, XUIGraphicsItem) else 500
+                try:
+                    if int(self.attributes["right"]) <= 0:
+                        self.attributes["right"] = str(int((snapped_x + self.rect().width()) - parent_w))
+                    else:
+                        self.attributes["right"] = str(int(snapped_x + self.rect().width()))
+                except ValueError:
+                    self.attributes["right"] = str(int(snapped_x + self.rect().width()))
+            elif "left_delta" in self.attributes and prev_sib:
                 self.attributes["left_delta"] = str(int(snapped_x - prev_sib.x()))
             elif "left_pad" in self.attributes and prev_sib:
                 self.attributes["left_pad"] = str(int(snapped_x - (prev_sib.x() + prev_sib.rect().width())))
             else:
                 self.attributes["left"] = str(int(snapped_x))
 
-            if "top_delta" in self.attributes and prev_sib:
+            # Calculate and update 'bottom' safely if it exists, preserving layout intent
+            if "bottom" in self.attributes:
+                parent_h = parent.rect().height() if isinstance(parent, XUIGraphicsItem) else 500
+                try:
+                    if int(self.attributes["bottom"]) <= 0:
+                        self.attributes["bottom"] = str(int((snapped_y + self.rect().height()) - parent_h))
+                    else:
+                        self.attributes["bottom"] = str(int(snapped_y + self.rect().height()))
+                except ValueError:
+                    self.attributes["bottom"] = str(int(snapped_y + self.rect().height()))
+            elif "top_delta" in self.attributes and prev_sib:
                 self.attributes["top_delta"] = str(int(snapped_y - prev_sib.y()))
             elif "top_pad" in self.attributes and prev_sib:
                 self.attributes["top_pad"] = str(int(snapped_y - (prev_sib.y() + prev_sib.rect().height())))
@@ -425,7 +467,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
         has_left, has_right = "left" in self.attributes, "right" in self.attributes
         follows = self.attributes.get("follows", "").lower()
-        if has_left and has_right and "left" not in follows and "right" not in follows and "all" not in follows:
+
+        normalized_follows = follows.replace(" ", "|").replace(",", "|")
+        follows_list = [f.strip() for f in normalized_follows.split("|") if f.strip()]
+
+        if has_left and has_right and "left" not in follows_list and "right" not in follows_list and "all" not in follows_list:
             warnings.append("Bad Practice: Opposing anchors (left & right) used without matching 'follows' flags.")
 
         return errors, warnings
@@ -518,7 +564,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
             self._plus_btn_rect = None
 
             if not actual_panels:
-                # Provide a convenient button to create the first tab
                 t_rect = QRectF(tab_x, tab_y, 30, tab_height)
                 painter.fillRect(t_rect, QColor("#222"))
                 painter.setPen(QPen(QColor("#111"), 1))
@@ -561,7 +606,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                     painter.setPen(QPen(QColor("#FFFFFF" if is_active else "#AAAAAA")))
                     painter.drawText(text_rect, Qt.AlignCenter, tab_label)
 
-                    # Draw (+) button only on active tab
                     if is_active:
                         plus_rect = QRectF(tab_x + calc_width - 20, tab_y + (tab_height - 14) / 2, 14, 14)
                         painter.fillRect(plus_rect, QColor("#222"))

@@ -21,6 +21,13 @@ from syntax_highlighter import XMLHighlighter
 from preferences import PreferencesDialog
 from config import CONFIG
 
+# Define known SL non-visual configuration elements so they don't break visual sibling layout math
+NON_VISUAL_TAGS = {
+    "callback", "string", "key", "val", "value", "column", "item",
+    "commit_callback", "mouse_down_callback", "mouse_up_callback",
+    "on_enable", "on_disable", "on_click", "help", "doc", "menu_item"
+}
+
 
 class WidgetPaletteTree(QTreeWidget):
     def __init__(self, parent=None):
@@ -48,6 +55,7 @@ class MainWindow(QMainWindow):
         self.current_working_dir = ""
         self.tree_search_matches = []
         self.tree_search_idx = -1
+        self._scroll_to_selection_pending = False
 
         self.code_editors = {}
         self.compiled_results = {}  # Caches XML structural validation so search doesn't wipe it
@@ -177,12 +185,9 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_splitter)
         main_splitter.setSizes([250, 950, 400])
 
-        # --- UPDATED SIGNAL ROUTING ---
+        # --- SIGNAL ROUTING ---
         self.canvas.item_selected_signal.connect(self._on_item_selected)
-
-        # Route canvas modifications to our new custom synchronization function
         self.canvas.item_modified_signal.connect(self._on_canvas_item_modified)
-
         self.inspector.property_changed_signal.connect(self._queue_refresh)
         self.scene_tree.tree_refreshed.connect(self._reapply_tree_search)
 
@@ -192,16 +197,14 @@ class MainWindow(QMainWindow):
 
     def _on_canvas_item_modified(self, item):
         self._queue_refresh()
-        # Only refresh the inspector if the item being moved is the one currently visible in the properties window
         if item and item == self.current_selected_item:
             self.inspector.refresh_values()
 
-    # --- XML SEARCH LOGIC (Decoupled from XML Compiler) ---
+    # --- XML SEARCH LOGIC ---
     def _get_active_editor(self):
         return self.code_tabs.currentWidget()
 
     def _on_xml_search_changed(self, text):
-        # Reapply highlights using cached compilation structure + new search term
         self._apply_extra_selections()
         self._xml_search_next()
 
@@ -270,6 +273,8 @@ class MainWindow(QMainWindow):
                 if self.code_tabs.tabText(i) == fname:
                     self.code_tabs.setCurrentIndex(i)
                     break
+        # Flag that a purposeful selection happened, requesting an editor scroll adjustment
+        self._scroll_to_selection_pending = True
         self._queue_refresh()
 
     def _queue_refresh(self, _ignored=None):
@@ -282,7 +287,6 @@ class MainWindow(QMainWindow):
             self.compiled_results.clear()
             return
 
-        # Heavy compilation only runs when dragging stops
         self.compiled_results = XUICompiler.generate_source(self.canvas.root_container_instance,
                                                             self.current_selected_item)
 
@@ -314,13 +318,14 @@ class MainWindow(QMainWindow):
         self._apply_extra_selections()
 
     def _apply_extra_selections(self):
-        """Applies syntax squigglies and active search matches to the editors instantly without recompiling."""
+        """Applies syntax highlights and active search matches to the editors instantly without recompiling."""
         for fname, editor in self.code_editors.items():
             if fname not in self.compiled_results: continue
 
             selections = self.compiled_results[fname][1]
             extra_selections = []
             doc = editor.document()
+            first_selected_cursor = None
 
             def add_selection(start_line, end_line, fmt):
                 start_block = doc.findBlockByNumber(start_line)
@@ -334,11 +339,16 @@ class MainWindow(QMainWindow):
                 sel.cursor = cursor
                 sel.format = fmt
                 extra_selections.append(sel)
+                return cursor
 
             sel_fmt = QTextCharFormat()
             sel_fmt.setBackground(QColor(CONFIG["ui_colors"]["highlight"]))
             sel_fmt.setProperty(QTextFormat.FullWidthSelection, True)
-            for start, end in selections['selected']: add_selection(start, end, sel_fmt)
+            for start, end in selections['selected']:
+                add_selection(start, end, sel_fmt)
+                if first_selected_cursor is None:
+                    # Generate a tracking cursor situated at the start of the targeted layout element block
+                    first_selected_cursor = QTextCursor(doc.findBlockByNumber(start))
 
             err_fmt = QTextCharFormat()
             err_fmt.setUnderlineStyle(QTextCharFormat.WaveUnderline)
@@ -365,6 +375,18 @@ class MainWindow(QMainWindow):
 
             editor.setExtraSelections(extra_selections)
 
+            # SCROLL FOCUS ROUTINE: Force the top of the selected code block to the top of the window viewport
+            if first_selected_cursor and self.code_tabs.currentWidget() == editor and self._scroll_to_selection_pending:
+                editor.setTextCursor(first_selected_cursor)
+
+                # Fetch abstract layout coordinate data for the block line and push directly to scroll values
+                block = first_selected_cursor.block()
+                block_top = editor.document().documentLayout().blockBoundingRect(block).top()
+                editor.verticalScrollBar().setValue(int(block_top))
+
+        # Clear the flag after processing the layout views
+        self._scroll_to_selection_pending = False
+
     # --- IMPORT & EXPORT MULTI-FILE LOGIC ---
     def _new_layout(self):
         self.canvas.clear_canvas()
@@ -374,12 +396,55 @@ class MainWindow(QMainWindow):
         self.code_tabs.clear()
         self.code_editors.clear()
         self.compiled_results.clear()
+        self._scroll_to_selection_pending = False
 
     def _set_texture_folder(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Viewer Textures", TextureManager.get().base_path)
         if dir_path:
             TextureManager.get().set_base_path(dir_path)
             self.canvas.scene.update()
+
+    def _resolve_external_file(self, ref_file):
+        """Resolves external XML references across local, widget, and SL skin folder hierarchies."""
+        if not ref_file:
+            return None
+
+        candidates = []
+        if self.current_working_dir:
+            candidates.append(os.path.join(self.current_working_dir, ref_file))
+            candidates.append(os.path.join(self.current_working_dir, "widgets", ref_file))
+            candidates.append(os.path.join(self.current_working_dir, "..", ref_file))
+            candidates.append(os.path.join(self.current_working_dir, "..", "widgets", ref_file))
+
+        try:
+            tm_base = TextureManager.get().base_path
+            if tm_base:
+                skin_root = os.path.normpath(os.path.join(tm_base, ".."))
+                candidates.append(os.path.join(skin_root, "xui", "en", ref_file))
+                candidates.append(os.path.join(skin_root, "xui", "en", "widgets", ref_file))
+                candidates.append(os.path.join(skin_root, "xui", "en", "panel", ref_file))
+        except Exception:
+            pass
+
+        for path in candidates:
+            norm_path = os.path.normpath(path)
+            if os.path.exists(norm_path) and os.path.isfile(norm_path):
+                return norm_path
+
+        return None
+
+    def _post_import_layout_pass(self, item):
+        """Recursively recalculates layout containers after full DOM ingestion."""
+        if not item:
+            return
+
+        for child in item.child_xui_items:
+            self._post_import_layout_pass(child)
+
+        if item.tag_name == "tab_container":
+            item.update_tabs()
+        elif item.tag_name in ("layout_stack", "layout_panel"):
+            item.update_layout_stack()
 
     def _open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open XUI XML File", "", "XML Files (*.xml);;All Files (*)")
@@ -390,7 +455,10 @@ class MainWindow(QMainWindow):
         try:
             tree = ET.parse(file_path)
             self._new_layout()
-            self._parse_xml_node(tree.getroot(), parent_item=None, current_file=base_filename)
+            root_item = self._parse_xml_node(tree.getroot(), parent_item=None, current_file=base_filename)
+
+            self._post_import_layout_pass(root_item)
+
             self.scene_tree.refresh_tree()
             self._queue_refresh()
         except Exception as e:
@@ -399,9 +467,12 @@ class MainWindow(QMainWindow):
     def _parse_xml_node(self, element, parent_item=None, last_sibling_item=None, current_file="layout.xml"):
         tag_name = element.tag
 
-        if "." in tag_name:
+        if "." in tag_name or tag_name in NON_VISUAL_TAGS:
             if parent_item and isinstance(parent_item, XUIGraphicsItem):
-                parent_item.non_visual_children.append({"tag": tag_name, "attributes": dict(element.attrib)})
+                parent_item.non_visual_children.append({
+                    "tag": tag_name,
+                    "attributes": dict(element.attrib)
+                })
             return None
 
         attributes = dict(element.attrib)
@@ -413,7 +484,6 @@ class MainWindow(QMainWindow):
 
         left = right = top = bottom = None
 
-        # -- CRITICAL FIX: Safe Relative Parsing without Siblings --
         if "left" in attributes:
             left = int(attributes["left"])
         elif "left_delta" in attributes:
@@ -463,13 +533,18 @@ class MainWindow(QMainWindow):
         elif top is None:
             top = 0
 
-        attributes.update(
-            {"left": str(int(left)), "top": str(int(top)), "width": str(int(width)), "height": str(int(height))})
+        attributes.update({
+            "left": str(int(left)),
+            "top": str(int(top)),
+            "width": str(int(width)),
+            "height": str(int(height))
+        })
 
         item = XUIGraphicsItem(tag_name, attributes)
         item.source_file = current_file
 
-        if element.text and element.text.strip(): item.inner_text = element.text.strip()
+        if element.text and element.text.strip():
+            item.inner_text = element.text.strip()
 
         item.setPos(QPointF(left, top))
         item.sync_geometry_to_attributes()
@@ -484,13 +559,13 @@ class MainWindow(QMainWindow):
         for child_el in element:
             created_child = self._parse_xml_node(child_el, parent_item=item, last_sibling_item=prev_child,
                                                  current_file=current_file)
-            if created_child: prev_child = created_child
+            if created_child:
+                prev_child = created_child
 
-        # RECURSIVE FILE NESTING
-        if "filename" in attributes and self.current_working_dir:
+        if "filename" in attributes:
             ref_file = attributes["filename"]
-            full_path = os.path.join(self.current_working_dir, ref_file)
-            if os.path.exists(full_path):
+            full_path = self._resolve_external_file(ref_file)
+            if full_path:
                 child_tree = ET.parse(full_path)
                 imp_root = self._parse_xml_node(child_tree.getroot(), parent_item=item, current_file=ref_file)
                 if imp_root:
