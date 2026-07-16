@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor
 from config import CONFIG, save_config, get_textures_path
-from src.registry import reload_registry
-
+from registry import reload_registry
+from textures import TextureManager
 
 class PreferencesDialog(QDialog):
     def __init__(self, parent=None):
@@ -34,6 +34,7 @@ class PreferencesDialog(QDialog):
         # 1. Base Viewer Installation Path
         viewer_path = CONFIG.get("paths", {}).get("sl_viewer_path", "C:/Program Files/SecondLifeViewer")
         self.viewer_path_edit = QLineEdit(viewer_path)
+
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self._browse_viewer_path)
 
@@ -41,6 +42,18 @@ class PreferencesDialog(QDialog):
         path_box.addWidget(self.viewer_path_edit)
         path_box.addWidget(browse_btn)
         paths_layout.addRow("Viewer Installation Path:", path_box)
+
+        self.skin_combo = QComboBox()
+        self.populate_skins(viewer_path)
+
+        current_skin = CONFIG.get("paths", {}).get("skin_name", "default")
+        idx = self.skin_combo.findText(current_skin)
+        if idx >= 0:
+            self.skin_combo.setCurrentIndex(idx)
+        else:
+            self.skin_combo.setCurrentText(current_skin)
+
+        self.viewer_path_edit.textChanged.connect(self.populate_skins)
 
         # 2. Skin Selection Dropdown (Auto-scans /skins/ directory)
         self.skin_combo = QComboBox()
@@ -85,6 +98,49 @@ class PreferencesDialog(QDialog):
         btn_layout.addWidget(save_btn)
         btn_layout.addWidget(cancel_btn)
         main_layout.addLayout(btn_layout)
+
+    def populate_skins(self, viewer_path=None):
+        """Scans the viewer path for available skins, supporting both root and direct /skins paths."""
+        if not isinstance(viewer_path, str) or not viewer_path:
+            viewer_path = self.viewer_path_edit.text().strip()
+
+        current_selection = self.skin_combo.currentText()
+        self.skin_combo.blockSignals(True)
+        self.skin_combo.clear()
+        skins_found = []
+
+        # Case 1: Standard installation (e.g., C:/Program Files/FirestormViewer -> check inside /skins)
+        skins_subdir = os.path.join(viewer_path, "skins")
+        if os.path.exists(skins_subdir) and os.path.isdir(skins_subdir):
+            target_dir = skins_subdir
+        # Case 2: User pointed directly at the 'skins' directory (e.g., .../FirestormViewer/skins)
+        elif os.path.exists(viewer_path) and os.path.isdir(viewer_path):
+            if os.path.exists(os.path.join(viewer_path, "default")):
+                target_dir = viewer_path
+            else:
+                target_dir = None
+        else:
+            target_dir = None
+
+        if target_dir and os.path.exists(target_dir):
+            for item in sorted(os.listdir(target_dir)):
+                full_p = os.path.join(target_dir, item)
+                if os.path.isdir(full_p) and not item.startswith('.'):
+                    skins_found.append(item)
+
+        if "default" not in skins_found:
+            skins_found.insert(0, "default")
+        elif skins_found[0] != "default":
+            skins_found.remove("default")
+            skins_found.insert(0, "default")
+
+        self.skin_combo.addItems(skins_found)
+
+        # Restore previous selection if it still exists
+        idx = self.skin_combo.findText(current_selection)
+        if idx >= 0:
+            self.skin_combo.setCurrentIndex(idx)
+        self.skin_combo.blockSignals(False)
 
     def _make_path_picker(self, key, initial_path):
         container = QWidget()
@@ -205,18 +261,14 @@ class PreferencesDialog(QDialog):
 
         save_config(CONFIG)
 
-        # 1. Update Live Texture Index for the new skin
-        from textures import TextureManager
-        if TextureManager._instance:
-            TextureManager._instance.set_base_path(get_textures_path())
-
-        # 2. Reload XUI Schema definitions for the new skin
         reload_registry()
+
+        if TextureManager._instance:
+            TextureManager._instance.set_base_path()  # Passing None triggers hierarchical get_textures_paths()
 
         # 3. Trigger Live Application UI Sync on MainWindow
         parent_win = self.parent()
-        if parent_win and hasattr(parent_win, "apply_live_preferences"):
-            parent_win.apply_live_preferences()
+        if parent_win and hasattr(parent_win, "canvas") and parent_win.canvas:
+            parent_win.canvas.scene.update()
 
-        # Close dialog smoothly without the restart warning popup
         self.accept()

@@ -52,27 +52,98 @@ def save_config(config_data):
 # Global configuration instance
 CONFIG = load_config()
 
-
 def get_skin_path():
+    """Returns the primary active skin directory path, regardless of whether base points to root or /skins."""
     base = CONFIG.get("paths", {}).get("sl_viewer_path", "C:/Program Files/SecondLifeViewer")
     skin = CONFIG.get("paths", {}).get("skin_name", "default")
 
-    # Resolves standard installation paths (e.g. C:/Program Files/SecondLifeViewer/skins/default)
-    # or custom dev builds (e.g. .../indra/newview/skins/default)
+    # Case 1: Standard root path (e.g., .../SecondLifeViewer -> .../SecondLifeViewer/skins/default)
     skin_dir = os.path.join(base, "skins", skin)
-    if not os.path.exists(skin_dir) and os.path.exists(os.path.join(base, skin)):
-        # Fallback if you point directly to a skins parent folder
-        skin_dir = os.path.join(base, skin)
+    if os.path.exists(skin_dir):
+        return skin_dir
+
+    # Case 2: User pointed directly at the 'skins' directory (e.g., .../skins -> .../skins/default)
+    direct_dir = os.path.join(base, skin)
+    if os.path.exists(direct_dir):
+        return direct_dir
+
     return skin_dir
 
 
+def get_skin_paths():
+    """Returns a list of skin directories in inheritance order: [default_skin_dir, active_skin_dir]."""
+    base = CONFIG.get("paths", {}).get("sl_viewer_path", "C:/Program Files/SecondLifeViewer")
+    skin = CONFIG.get("paths", {}).get("skin_name", "default")
+
+    paths = []
+    # 1. Resolve 'default' skin directory
+    default_dir = os.path.join(base, "skins", "default")
+    if not os.path.exists(default_dir):
+        default_alt = os.path.join(base, "default")
+        if os.path.exists(default_alt):
+            default_dir = default_alt
+    if os.path.exists(default_dir):
+        paths.append(default_dir)
+
+    # 2. Add active custom skin second (to override default definitions/textures)
+    if skin.lower() != "default":
+        active_dir = get_skin_path()
+        if os.path.exists(active_dir) and active_dir not in paths:
+            paths.append(active_dir)
+
+    if not paths:
+        paths.append(base)
+
+    return paths
+
+
 def get_textures_path():
-    return os.path.join(get_skin_path(), "textures")
+    """Returns the active texture path."""
+    skin_dir = get_skin_path()
+    tex_dir = os.path.join(skin_dir, "textures")
+    return tex_dir if os.path.exists(tex_dir) else skin_dir
+
+
+def get_textures_paths():
+    """Returns all texture directories to scan in inheritance order (default -> active)."""
+    skin_dirs = get_skin_paths()
+    tex_paths = []
+    for sdir in skin_dirs:
+        tex_dir = os.path.join(sdir, "textures")
+        if os.path.exists(tex_dir):
+            tex_paths.append(tex_dir)
+        else:
+            tex_paths.append(sdir)
+    return tex_paths
 
 
 def get_xui_path():
-    skin_p = get_skin_path()
-    en_path = os.path.join(skin_p, "xui", "en")
-    if os.path.exists(en_path):
-        return en_path
-    return os.path.join(skin_p, "xui")
+    """Returns the active XUI directory path."""
+    skin_dir = get_skin_path()
+    for lang in ["en", "en-us", "default"]:
+        xdir = os.path.join(skin_dir, "xui", lang)
+        if os.path.exists(xdir):
+            return xdir
+    xbase = os.path.join(skin_dir, "xui")
+    return xbase if os.path.exists(xbase) else skin_dir
+
+
+def get_xui_paths():
+    """Returns all XUI directories to scan in inheritance order (default -> active)."""
+    skin_dirs = get_skin_paths()
+    xui_paths = []
+    for sdir in skin_dirs:
+        found = False
+        for lang in ["en", "en-us", "default"]:
+            xdir = os.path.join(sdir, "xui", lang)
+            if os.path.exists(xdir):
+                xui_paths.append(xdir)
+                found = True
+                break
+        if not found:
+            xbase = os.path.join(sdir, "xui")
+            if os.path.exists(xbase):
+                xui_paths.append(xbase)
+            else:
+                xui_paths.append(sdir)
+    return xui_paths

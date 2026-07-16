@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPalette, QColor
 from main_window import MainWindow
 from config import CONFIG
+from textures import TextureManager
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -17,7 +18,7 @@ if __name__ == "__main__":
     palette.setColor(QPalette.Button, QColor(CONFIG["ui_colors"]["window_bg"]))
     palette.setColor(QPalette.ButtonText, QColor(CONFIG["ui_colors"]["window_text"]))
 
-    # --- ADDED: Explicit Highlight & Inactive Highlight Colors ---
+    # --- Highlight & Inactive Highlight Colors ---
     highlight_color = QColor(CONFIG["ui_colors"]["highlight"])
     highlighted_text = QColor("#FFFFFF")
 
@@ -27,10 +28,9 @@ if __name__ == "__main__":
     # Force Qt to show the colored highlight box even when the Tree Widget is out of focus
     palette.setColor(QPalette.Inactive, QPalette.Highlight, highlight_color)
     palette.setColor(QPalette.Inactive, QPalette.HighlightedText, highlighted_text)
-    # -------------------------------------------------------------
 
     app.setPalette(palette)
-
+    TextureManager()
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

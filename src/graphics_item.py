@@ -615,12 +615,21 @@ class XUIGraphicsItem(QGraphicsRectItem):
         return errors, warnings
 
     def paint(self, painter, option, widget=None):
+        painter.setClipRect(option.exposedRect)
         rect = self.rect()
 
-        # 1. Resolve Background / 9-Slice Button Textures
-        bg_texture_key = (self.attributes.get("image_unselected") or
-                          self.attributes.get("bg_image") or
-                          self.attributes.get("background_image"))
+        # Safely resolve TextureManager instance without risking NoneType errors
+        tm = TextureManager.get()
+        get_pixmap = tm.get_pixmap if tm else lambda k: None
+
+        # 1. Resolve Background / 9-Slice Button Textures across all standard SL attribute keys
+        bg_texture_key = None
+        for attr_key in ["image_unselected", "background_image", "bg_image", "bg_opaque_image", "image",
+                         "chrome_image"]:
+            val = self.attributes.get(attr_key)
+            if val and str(val).strip():
+                bg_texture_key = str(val).strip()
+                break
 
         # Apply container defaults if no explicit background image is set
         if not bg_texture_key:
@@ -629,11 +638,11 @@ class XUIGraphicsItem(QGraphicsRectItem):
             elif self.tag_name == "panel":
                 bg_texture_key = "panel_bg"
 
-        bg_pixmap = TextureManager.get().get_pixmap(bg_texture_key) if bg_texture_key else None
+        bg_pixmap = get_pixmap(bg_texture_key)
 
         # --- Special Case: Floater Window ---
         if self.tag_name == "floater":
-            if bg_pixmap:
+            if bg_pixmap and not bg_pixmap.isNull():
                 draw_9_slice(painter, bg_pixmap, rect)
             else:
                 painter.fillRect(rect, QColor("#222222"))
@@ -641,8 +650,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 painter.drawRect(rect)
 
             header_rect = QRectF(rect.x(), rect.y(), rect.width(), 24)
-            header_pixmap = TextureManager.get().get_pixmap("floater_header")
-            if header_pixmap:
+            header_pixmap = get_pixmap("floater_header")
+            if header_pixmap and not header_pixmap.isNull():
                 draw_9_slice(painter, header_pixmap, header_rect, 4, 4, 4, 4)
             else:
                 painter.fillRect(header_rect, QColor("#333333"))
@@ -661,8 +670,18 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.setPen(QPen(QColor("#444444"), 1))
             painter.drawRect(track_rect)
 
-            fill_rect = QRectF(rect.x() + 2, rect.y() + 2, (rect.width() - 4) * 0.5, rect.height() - 4)
-            painter.fillRect(fill_rect, QColor("#1e457c"))
+            try:
+                val_str = (self.attributes.get("value") or
+                           self.attributes.get("initial_val") or
+                           self.attributes.get("val") or "0.5")
+                progress_val = max(0.0, min(1.0, float(val_str)))
+            except ValueError:
+                progress_val = 0.5
+
+            fill_w = max(0.0, (rect.width() - 4) * progress_val)
+            if fill_w > 0:
+                fill_rect = QRectF(rect.x() + 2, rect.y() + 2, fill_w, rect.height() - 4)
+                painter.fillRect(fill_rect, QColor("#1e457c"))
 
             self._draw_selection_box(painter, rect)
             return
@@ -670,17 +689,36 @@ class XUIGraphicsItem(QGraphicsRectItem):
         # --- Special Case: Pure Text Label ---
         elif self.tag_name == "text":
             painter.setPen(QPen(QColor("#FFFFFF")))
-            txt_label = self.attributes.get("label") or self.attributes.get("name") or getattr(self, 'inner_text',
-                                                                                               '') or "Text Label"
+            txt_label = (self.attributes.get("label") or
+                         self.attributes.get("name") or
+                         getattr(self, 'inner_text', '') or "Text Label")
             if txt_label == "unnamed":
                 txt_label = "Text Label"
-            painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, txt_label)
 
+            halign_str = self.attributes.get("halign", "left").lower()
+            valign_str = self.attributes.get("valign", "center").lower()
+
+            align_flags = Qt.TextSingleLine
+            if halign_str == "center":
+                align_flags |= Qt.AlignHCenter
+            elif halign_str == "right":
+                align_flags |= Qt.AlignRight
+            else:
+                align_flags |= Qt.AlignLeft
+
+            if valign_str == "top":
+                align_flags |= Qt.AlignTop
+            elif valign_str == "bottom":
+                align_flags |= Qt.AlignBottom
+            else:
+                align_flags |= Qt.AlignVCenter
+
+            painter.drawText(rect.adjusted(2, 2, -2, -2), align_flags, txt_label)
             self._draw_selection_box(painter, rect)
             return
 
+        # --- Special Case: Tab Container ---
         elif self.tag_name == "tab_container":
-            # Draw container background
             painter.fillRect(rect, QColor("#1e1e1e"))
             painter.setPen(QPen(QColor("#555555"), 1))
             painter.drawRect(rect)
@@ -695,7 +733,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
             self._tab_header_rects = []
             self._plus_btn_rect = None
 
-            # 1. Resolve Header Area & Divider Line
             if tab_pos_side == "top":
                 header_rect = QRectF(rect.x(), rect.y(), rect.width(), tab_height)
                 divider_line = QLineF(rect.left(), rect.top() + tab_height, rect.right(), rect.top() + tab_height)
@@ -704,10 +741,12 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 divider_line = QLineF(rect.left(), rect.bottom() - tab_height, rect.right(), rect.bottom() - tab_height)
             elif tab_pos_side == "left":
                 header_rect = QRectF(rect.x(), rect.y(), tab_width_attr, rect.height())
-                divider_line = QLineF(rect.left() + tab_width_attr, rect.top(), rect.left() + tab_width_attr, rect.bottom())
+                divider_line = QLineF(rect.left() + tab_width_attr, rect.top(), rect.left() + tab_width_attr,
+                                      rect.bottom())
             elif tab_pos_side == "right":
                 header_rect = QRectF(rect.right() - tab_width_attr, rect.y(), tab_width_attr, rect.height())
-                divider_line = QLineF(rect.right() - tab_width_attr, rect.top(), rect.right() - tab_width_attr, rect.bottom())
+                divider_line = QLineF(rect.right() - tab_width_attr, rect.top(), rect.right() - tab_width_attr,
+                                      rect.bottom())
             else:
                 header_rect = QRectF(rect.x(), rect.y(), rect.width(), tab_height)
                 divider_line = QLineF(rect.left(), rect.top() + tab_height, rect.right(), rect.top() + tab_height)
@@ -715,18 +754,18 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.fillRect(header_rect, QColor("#141414"))
             painter.drawLine(divider_line)
 
-            # 2. Draw Individual Tabs
             offset = 2
             for i, tab_panel in enumerate(actual_panels):
-                tab_label = tab_panel.attributes.get("label", tab_panel.attributes.get("title", tab_panel.attributes.get("name", "Unnamed Tab")))
-                is_active = (i == self.active_tab_index)
+                tab_label = tab_panel.attributes.get("label", tab_panel.attributes.get("title",
+                                                                                       tab_panel.attributes.get("name",
+                                                                                                                "Unnamed Tab")))
+                is_active = (i == getattr(self, 'active_tab_index', 0))
 
                 if tab_pos_side in ["top", "bottom"]:
                     extra_w = 20 if is_active else 0
                     calc_size = max(min_w, min(max_w, len(tab_label) * 7 + 20)) + extra_w
                     tab_rect = QRectF(rect.x() + offset, header_rect.y(), calc_size, tab_height)
                 else:
-                    # Vertical layout (left/right): Height per tab defaults to tab_height
                     calc_size = max(20, tab_height + (6 if is_active else 0))
                     tab_rect = QRectF(header_rect.x(), rect.y() + offset, tab_width_attr, calc_size)
 
@@ -752,7 +791,6 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 painter.drawText(tab_rect.adjusted(4, 0, -4, 0), Qt.AlignCenter | Qt.AlignVCenter, tab_label)
                 offset += calc_size
 
-            # 3. Draw '+' Button
             if tab_pos_side in ["top", "bottom"]:
                 self._plus_btn_rect = QRectF(rect.x() + offset + 4, header_rect.y() + 2, 20, tab_height - 4)
             else:
@@ -763,50 +801,57 @@ class XUIGraphicsItem(QGraphicsRectItem):
             painter.drawRect(self._plus_btn_rect)
             painter.drawText(self._plus_btn_rect, Qt.AlignCenter, "+")
 
-            self.update_tabs()
             self._draw_selection_box(painter, rect)
             return
 
         # --- Standard Controls & Imported Viewer Widgets ---
-        # Draw Background (9-sliced texture or fallback solid box)
-        if bg_pixmap:
-            draw_9_slice(painter, bg_pixmap, rect)
+        # 1. Draw Background (9-sliced texture or fallback solid box)
+        if bg_pixmap and not bg_pixmap.isNull():
+            if self.tag_name in ("icon", "image", "avatar_icon", "view_border"):
+                painter.drawPixmap(rect, bg_pixmap, QRectF(bg_pixmap.rect()))
+            else:
+                draw_9_slice(painter, bg_pixmap, rect)
         else:
             painter.fillRect(rect, QColor("#3a3a3a"))
             painter.setPen(QPen(QColor("#555555"), 1))
             painter.drawRect(rect)
 
-        # 2. Resolve Control Icons / Textures (Prioritizing default_icon_name)
+        # 2. Resolve Control Icons / Overlays
         icon_texture_key = (self.attributes.get("default_icon_name") or
                             self.attributes.get("icon") or
                             self.attributes.get("image_name") or
-                            self.attributes.get("image") or
-                            self.attributes.get("image_overlay"))
+                            self.attributes.get("image_overlay") or
+                            (self.attributes.get("image") if self.tag_name in ("icon", "image") else None))
+
+        is_checkbox_or_radio = self.tag_name in ("check_box", "radio_item")
 
         if icon_texture_key:
-            icon_pixmap = TextureManager.get().get_pixmap(icon_texture_key)
+            icon_pixmap = get_pixmap(icon_texture_key)
             if icon_pixmap and not icon_pixmap.isNull():
                 iw, ih = float(icon_pixmap.width()), float(icon_pixmap.height())
-                avail_w = max(1.0, rect.width() - 4.0)
-                avail_h = max(1.0, rect.height() - 4.0)
 
-                # If icon is larger than control box or if the control is purely an image tag, scale to fit
-                if (iw > avail_w or ih > avail_h or self.tag_name in ("icon", "image")) and iw > 0 and ih > 0:
-                    scale = min(avail_w / iw, avail_h / ih)
-                    target_w = iw * scale
-                    target_h = ih * scale
-                    target_rect = QRectF(
-                        rect.center().x() - target_w / 2.0,
-                        rect.center().y() - target_h / 2.0,
-                        target_w, target_h
-                    )
+                if is_checkbox_or_radio:
+                    box_size = min(max(12.0, ih), rect.height() - 4.0)
+                    target_rect = QRectF(rect.left() + 4.0, rect.center().y() - (box_size / 2.0), box_size, box_size)
                 else:
-                    # Draw centered at native 1:1 resolution
-                    target_rect = QRectF(
-                        rect.center().x() - iw / 2.0,
-                        rect.center().y() - ih / 2.0,
-                        iw, ih
-                    )
+                    avail_w = max(1.0, rect.width() - 4.0)
+                    avail_h = max(1.0, rect.height() - 4.0)
+
+                    if (iw > avail_w or ih > avail_h or self.tag_name in ("icon", "image")) and iw > 0 and ih > 0:
+                        scale = min(avail_w / iw, avail_h / ih)
+                        target_w = iw * scale
+                        target_h = ih * scale
+                        target_rect = QRectF(
+                            rect.center().x() - target_w / 2.0,
+                            rect.center().y() - target_h / 2.0,
+                            target_w, target_h
+                        )
+                    else:
+                        target_rect = QRectF(
+                            rect.center().x() - iw / 2.0,
+                            rect.center().y() - ih / 2.0,
+                            iw, ih
+                        )
                 painter.drawPixmap(target_rect, icon_pixmap, QRectF(icon_pixmap.rect()))
 
         # 3. Draw Control Text / Label (if applicable)
@@ -818,8 +863,12 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
         if label_text:
             painter.setPen(QPen(QColor("#FFFFFF")))
-            text_rect = rect.adjusted(6, 0, -6, 0)
-            painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, label_text)
+            if is_checkbox_or_radio:
+                text_rect = rect.adjusted(22, 0, -4, 0)
+                painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, label_text)
+            else:
+                text_rect = rect.adjusted(6, 0, -6, 0)
+                painter.drawText(text_rect, Qt.AlignCenter | Qt.AlignVCenter, label_text)
 
         self._draw_selection_box(painter, rect)
 
