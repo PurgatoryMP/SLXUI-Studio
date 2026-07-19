@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 from PySide6.QtCore import Qt, QPointF, QMimeData, QTimer
 from PySide6.QtGui import (
     QFont, QAction, QDrag, QTextDocument, QTextCursor, QTextFormat,
-    QTextCharFormat, QColor, QBrush, QPalette
+    QTextCharFormat, QColor, QBrush, QPalette, QIcon
 )
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
@@ -50,6 +50,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Second Life XUI Designer")
         self.resize(1600, 950)
+
+        self.setWindowIcon(QIcon("icon.ico"))
 
         self.current_selected_item = None
         self.current_working_dir = ""
