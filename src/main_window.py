@@ -48,7 +48,7 @@ class WidgetPaletteTree(QTreeWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Second Life XUI Designer")
+        self.setWindowTitle("SLXUI-Studio")
         self.resize(1600, 950)
 
         self.setWindowIcon(QIcon("icon.ico"))
