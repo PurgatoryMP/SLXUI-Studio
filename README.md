@@ -1,68 +1,85 @@
-# XUIDesigner 
-A Second Life XUI Layout Editor
+# SLXUI-Studio: Visual UI & Skin Layout Designer for Second Life
 
-XUIDesigner is a modern, high-performance desktop IDE built in Python and PySide6. It is designed specifically for creating, importing, editing, and compiling Second Life XML User Interface (XUI) layout structures. With live side-by-side visual designing and synchronized XML code generation, it takes the guesswork out of crafting interfaces for Second Life viewers.
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://doc.qt.io/qtforpython-6/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-orange.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Second Life](https://img.shields.io/badge/Platform-Second%20Life%20%7C%20Firestorm-purple.svg)](https://secondlife.com/)
+
+**SLXUI-Studio** is an open-source, visual WYSIWYG layout editor and desktop IDE built specifically for the **Second Life** and **Firestorm Viewer** creator ecosystem. Built with Python and PySide6, it eliminates the guesswork of hand-coding raw XML by providing a real-time visual canvas, interactive widget alignment, and synchronized XML code generation for Second Life XML User Interface (XUI) layouts and custom viewer skins.
 
 ---
 
 ## 📸 Screenshots
 
-### Modern Dark-Mode Main Window
-![Main Window](screenshots/MainWindow.PNG)
-
-### Configuration & Theme Customization
-![Preferences Dialog](screenshots/Preferences.PNG)
+| Modern Dark-Mode Main Window | Configuration & Theme Customization |
+| :---: | :---: |
+| ![Main Window](screenshots/MainWindow.PNG) | ![Preferences Dialog](screenshots/Preferences.PNG) |
 
 ---
 
-## 🚀 Key Features
+## 🚀 Why Use SLXUI-Studio?
 
-* **Visual Canvas with Interactive Alignment:** 
-  * Drag-and-drop widget layout directly from a comprehensive, pre-registered XUI Widget Palette.
-  * Real-time 8-way handles for resizing and snapping.
-  * Dynamic grid-snapping slider (adjustable from `2px` to `50px`) with a quick hotkey toggle.
-  * Precise 1:1 hardware ruler bars detailing active coordinate spaces.
-
-* **Live Side-by-Side Synchronized XML Compiler:**
-  * Changes on the canvas compile instantly to clean, compliant Second Life XML format.
-  * Syntax highlighting featuring a robust, built-in XML scanner.
-  * Bi-directional selection tracking: click a widget to jump straight to its code block, or search via the DOM Tree.
-
-* **Advanced Tab and Layout Container Mechanics:**
-  * Smart container support including `tab_container`, `layout_stack`, and `layout_panel`.
-  * Create, delete, and switch active tab panels on-the-fly directly inside the canvas.
-  * Automatic `follows` anchor layout recalculation (supporting nested layout constraints).
-
-* **Multi-File & Skin Resource Importing:**
-  * Recursively imports and merges secondary sub-XUI XML layout files (e.g., dynamically including headers, footers, or sub-panels).
-  * Automatically searches relative working directories and systemic Second Life Skin configurations to resolve missing asset packages.
-  * Supports custom skin theme parsing and custom 9-slice button/texture preview mapping.
+Historically, modding Second Life viewer UI required blindly editing XML files in text editors and repeatedly restarting the viewer in developer mode to test changes. **SLXUI-Studio** solves this by offering an end-to-end desktop development environment:
+* **Visual Drag-and-Drop Canvas:** Arrange panels, buttons, and text boxes visually without touching raw XML.
+* **Instant 9-Slice Texture Previews:** See how custom skin textures, TGA arrays, and J2C images render on UI elements in real time.
+* **Bi-Directional Synchronization:** Click a visual widget on the canvas to highlight its exact XML code block, or edit the XML directly to watch the visual canvas update instantly.
 
 ---
 
-### 🖥️ System & Runtime Requirements
+## ✨ Key Features
 
-* **Python 3.10+**: Built using modern performance features, including debounced background processing clocks and structural pattern definitions.
-* **Operating System**: Seamlessly cross-platform, natively supporting **Windows 10/11**, **macOS**, and **Linux**.
+### 🎨 Visual Canvas & Alignment Studio
+* **Comprehensive Widget Palette:** Drag-and-drop pre-registered Second Life XUI widgets directly onto your layout workspace.
+* **Precision Manipulation:** Real-time 8-way resize handles with dynamic grid-snapping (adjustable from 2px to 50px) and quick-toggle hotkeys.
+* **Hardware Ruler Bars:** 1:1 coordinate space rulers ensure pixel-perfect widget alignment across complex panels.
 
----
+### ⚡ Live Synchronized XML Compiler
+* **Real-Time Compilation:** Canvas modifications instantly compile into clean, schema-compliant Second Life XML syntax.
+* **Built-in XML Scanner & DOM Tree:** Features syntax highlighting and a hierarchical DOM navigation tree for rapid structural searching.
+* **Smart Container Mechanics:** Native support for complex viewer container behaviors, including tab containers, layout stacks, and layout panels. Create, delete, and switch active tab panels on the fly directly within the canvas.
+* **Constraint Recalculation:** Automatic follows-anchor layout recalculation to preserve nested layout constraints when resizing windows.
 
-### 📦 Core Library Dependencies & Hardware Drivers
-
-The application relies on a pair of core library suites to orchestrate graphical presentation and asset processing:
-
-* **Pillow (PIL)**: Manages image decoding and asset pipeline translation. It maps complex Second Life textures (such as high-resolution target `.tga` and `.j2c` arrays) into standard 32-bit pixel buffers (`Format_RGBA8888`).
-* **PySide6 (Qt 6 bindings)**: Drives the IDE workspace. It utilizes the following underlying components:
-  * **`QtWidgets`**: Architectures the dashboard workspace, orchestrating `QGraphicsView`/`QGraphicsScene` 2D visual layouts, multi-pane structural dock splitting (`QSplitter`), dynamic DOM context hierarchical navigation tree nodes (`QTreeWidget`), and side-by-side tabs (`QTabWidget`).
-  * **`QtGui`**: Powers the 2D hardware graphics engines, deploying high-speed drawing brushes (`QPainter`, `QPen`, `QBrush`) to build application UI matrices and handle active texture caches (`QPixmap`, `QImage`).
-  * **`QtCore`**: Routes thread signaling networks (`Signal`/`Slot`), processes hardware drop operations (`QMimeData`), and runs asynchronously debounced timers (`QTimer`) to prevent layout lag.
-* **Standard Python Utility Libraries**:
-  * `xml.etree.ElementTree`: Used directly to ingest, process, and output compliant layouts.
-  * `os` & `sys`: Handles local and global system directories and configurations.
+### 📂 Skin & Asset Pipeline Integration
+* **Recursive Sub-XUI Importing:** Automatically resolves, imports, and merges secondary XML layout dependencies (such as shared headers, footers, or sub-panels).
+* **Automated Asset Discovery:** Searches local working directories and systemic Second Life or Firestorm skin configuration paths to resolve missing asset packages.
+* **Advanced Texture Mapping:** Supports custom skin theme parsing and live 9-slice button and texture preview rendering.
 
 ---
 
-### 📂 Workspace Resource Specifications
+## 🛠️ System & Runtime Requirements
 
-The designer assumes you have secondlife viewer installed by default and will use the default skin path. you can select the skin directory for any other viewer and select the individual skins from the drop down.
-* **Texture Paths & Viewer Skins (Optional)**: Access to active Second Life skin asset suites, enabling the application's engine to scan and apply custom button metrics and 9-slice textures live.
+* **Python:** Version 3.10 or newer (utilizing modern structural pattern matching and debounced timers).
+* **Operating System:** Fully cross-platform, natively supporting **Windows 10/11**, **macOS**, and **Linux**.
+* **Target Viewers:** Compatible with official Linden Lab Second Life Viewers, Firestorm Viewer, and other third-party viewer distributions.
+
+---
+
+## 📦 Installation & Setup
+
+To get started with SLXUI-Studio on your local machine, complete the following three steps:
+
+1. **Clone the Repository:** Download the project files to your computer using your preferred Git client or by downloading the repository ZIP file directly from GitHub and extracting it to a local folder.
+2. **Install Core Dependencies:** Open your command prompt or terminal and use Python's package manager to install the two required graphics and UI libraries by typing: pip install PySide6 Pillow
+3. **Launch the Studio:** Navigate into your project folder inside your terminal and start the application by running: python src/main.py
+
+---
+
+## 🏗️ Technical Architecture & Under the Hood
+
+SLXUI-Studio relies on a clean, decoupled architecture powered by industry-standard Python libraries:
+
+| Module / Library | Core Responsibility |
+| :--- | :--- |
+| **PySide6.QtWidgets** | Powers the main IDE dashboard, 2D canvas rendering, multi-pane docking windows, and hierarchical DOM navigation trees. |
+| **PySide6.QtGui** | Drives high-speed 2D hardware graphics engines and manages active GUI texture caches. |
+| **PySide6.QtCore** | Handles asynchronous thread signaling, hardware drag-and-drop operations, and debounced background timers to eliminate layout lag. |
+| **Pillow (PIL)** | Operates the image asset pipeline—decoding complex Second Life texture formats into standard 32-bit RGBA pixel buffers. |
+| **xml.etree.ElementTree** | Executes schema-compliant parsing, serialization, and compilation of XUI DOM structures. |
+
+---
+
+## 🤝 Contributing & Community
+
+Contributions, bug reports, and feature suggestions are welcome! Whether you are building custom Firestorm skins or developing experimental viewer UI, feel free to fork the repository, submit pull requests, or open an issue on GitHub.
+
+**License:** Distributed under the GNU General Public License v3.0. See the LICENSE file in the repository for more information.
