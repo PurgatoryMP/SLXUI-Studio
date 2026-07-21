@@ -76,6 +76,17 @@ SLXUI-Studio relies on a clean, decoupled architecture powered by industry-stand
 | **Pillow (PIL)** | Operates the image asset pipeline—decoding complex Second Life texture formats into standard 32-bit RGBA pixel buffers. |
 | **xml.etree.ElementTree** | Executes schema-compliant parsing, serialization, and compilation of XUI DOM structures. |
 
+## To Compile it yourself.
+
+Make sure you have your .venv directory setup with the correct libraries.
+
+* **Navigate to your .venv/scripts/ path and run Activate.ps1**
+
+* **Installed pyinstaller via the command:** 
+	```pip install pyinstaller```
+	
+* **Run the following command from the pycharm or other terminal you maybe using:** 
+	```.\.venv\Scripts\pyinstaller --onefile --windowed --icon="icon.ico" --paths="src" --add-data="icon.ico;." --hidden-import=PIL src\main.py```
 ---
 
 ## 🤝 Contributing & Community
