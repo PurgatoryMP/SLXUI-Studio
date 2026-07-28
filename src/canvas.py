@@ -179,7 +179,7 @@ class CanvasContainer(QGraphicsView):
     def dropEvent(self, event: Any) -> None:
         """Handles dropping UI widget tags onto the canvas or into existing container items.
 
-        Instantiates new XUIGraphicsItems, handles tab panel automatic routing,
+        Instantiates new XUIGraphicsItems, handles tab panel and layout stack routing,
         calculates local coordinate snapping, and updates the layout hierarchy.
 
         Args:
@@ -188,8 +188,12 @@ class CanvasContainer(QGraphicsView):
         tag_name = event.mimeData().text()
         scene_pos = self.mapToScene(event.pos())
 
-        # Determine what is under the cursor (the parent container, if any)
-        parent_item = self.scene.itemAt(scene_pos, self.transform())
+        parent_item = self.itemAt(event.pos())
+
+        # Trigger layout recalculations if modifying a stack hierarchy
+        if getattr(parent_item, "tag_name", None) in ("layout_stack", "layout_panel"):
+            if hasattr(parent_item, "update_layout_stack"):
+                parent_item.update_layout_stack()
 
         # Fetch dynamic grid settings once at the top
         grid_size = getattr(self, 'grid_size', 10)
@@ -227,6 +231,36 @@ class CanvasContainer(QGraphicsView):
                     parent_item.add_child_item(tab_panel)
                     parent_item = tab_panel
 
+            # --- LAYOUT STACK DROP REDIRECTION ---
+            elif (
+                    parent_item.tag_name == "layout_stack"
+                    and tag_name != "layout_panel"
+            ):
+                panels = [
+                    c for c in parent_item.child_xui_items
+                    if isinstance(c, XUIGraphicsItem) and c.tag_name == "layout_panel"
+                ]
+                if panels:
+                    # Route widget into the specific layout_panel beneath the cursor
+                    local_pos = parent_item.mapFromScene(scene_pos)
+                    target_panel = panels[0]
+                    for p in panels:
+                        if p.mapRectToParent(p.rect()).contains(local_pos):
+                            target_panel = p
+                            break
+                    parent_item = target_panel
+                else:
+                    # Automatically generate an initial layout_panel if stack is empty
+                    panel_idx = len(parent_item.child_xui_items) + 1
+                    layout_panel = XUIGraphicsItem("layout_panel", {
+                        "name": f"panel_{panel_idx}",
+                        "auto_resize": "true",
+                        "width": parent_item.attributes.get("width", "200"),
+                        "height": "100"
+                    })
+                    parent_item.add_child_item(layout_panel)
+                    parent_item = layout_panel
+
             # Convert absolute scene mouse position to the parent's local coordinate space
             local_pos = parent_item.mapFromScene(scene_pos)
 
@@ -247,6 +281,13 @@ class CanvasContainer(QGraphicsView):
             # Nest it inside the target container/panel
             parent_item.add_child_item(new_item)
             new_item.sync_attributes_to_geometry()
+
+            # Trigger layout recalculations if modifying a stack hierarchy
+            if parent_item.tag_name in ("layout_stack", "layout_panel"):
+                if hasattr(parent_item, "update_layout_stack"):
+                    parent_item.update_layout_stack()
+                elif parent_item.parentItem() and hasattr(parent_item.parentItem(), "update_layout_stack"):
+                    parent_item.parentItem().update_layout_stack()
 
         else:
             # Apply dynamic slider grid and toggle to root canvas drops
@@ -278,14 +319,17 @@ class CanvasContainer(QGraphicsView):
         if not item or not item.scene():
             return
 
+        parent = item.parentItem()
+
         # Create a shallow copy of the list to safely iterate during deletion
         children_copy = list(item.child_xui_items)
         for child in children_copy:
             self.delete_item(child)
 
-        parent = item.parentItem()
         if isinstance(parent, XUIGraphicsItem):
             parent.remove_child_item(item)
+            if parent.tag_name == "layout_stack" and hasattr(parent, "update_layout_stack"):
+                parent.update_layout_stack()
         elif self.root_container_instance == item:
             self.root_container_instance = None
 

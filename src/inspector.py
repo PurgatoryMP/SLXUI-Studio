@@ -130,7 +130,7 @@ class PropertyInspector(QWidget):
         current_xui_item (Optional[Any]): Reference to the currently inspected XUIGraphicsItem.
         updating (bool): Internal lock flag used to prevent recursive signal feedback loops.
         editors (Dict[str, Tuple[QWidget, str]]): Mapping of attribute names to tuples containing
-            the editor widget instance and the data type string ('str', 'bool', 'combo').
+            the editor widget instance and the data type string ('str', 'bool', 'combo', 'follows').
     """
 
     property_changed_signal = Signal()
@@ -185,7 +185,9 @@ class PropertyInspector(QWidget):
             self.updating = True
             for key, (editor, attr_type) in self.editors.items():
                 val = self.current_xui_item.attributes.get(key, "")
-                if attr_type == "bool":
+                if attr_type == "follows":
+                    self._update_follows_checkboxes(editor, str(val))
+                elif attr_type == "bool":
                     editor.setChecked(str(val).lower() in ["true", "1", "yes"])
                 elif attr_type == "combo":
                     idx = editor.findText(str(val), Qt.MatchFixedString)
@@ -224,11 +226,74 @@ class PropertyInspector(QWidget):
             "floater_header", "floater_bg", "panel_bg"
         }
         return (
-                attr_lower in image_keys
-                or attr_lower.startswith("image")
-                or attr_lower.endswith("_image")
-                or "icon" in attr_lower
+            attr_lower in image_keys
+            or attr_lower.startswith("image")
+            or attr_lower.endswith("_image")
+            or "icon" in attr_lower
         )
+
+    def _update_follows_checkboxes(self, container: QWidget, val_str: str) -> None:
+        """Synchronizes the checked states of the follows checkbox group against an XML attribute string.
+
+        Args:
+            container: The QWidget containing the mapped 'checkboxes' dictionary.
+            val_str: The pipe-delimited follows attribute string (e.g., 'left|top' or 'all').
+        """
+        if not hasattr(container, "checkboxes"):
+            return
+        current = str(val_str).lower().strip()
+        is_all = (current == "all")
+        if is_all:
+            active = {"left", "top", "right", "bottom", "all"}
+        else:
+            active = set(e.strip() for e in current.split("|") if e.strip())
+            if len(active & {"left", "top", "right", "bottom"}) == 4:
+                active.add("all")
+
+        for edge, cb in container.checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(edge in active)
+            cb.blockSignals(False)
+
+    def _on_follows_checkbox_toggled(self, toggled_edge: str, checked: bool) -> None:
+        """Handles toggle events from individual follows checkboxes and updates the attribute string.
+
+        Args:
+            toggled_edge: The edge name that was toggled ('left', 'top', 'right', 'bottom', or 'all').
+            checked: The new checked state of the checkbox.
+        """
+        if self.updating or not self.current_xui_item:
+            return
+
+        current_val = self.current_xui_item.attributes.get("follows", "left|top").lower()
+        if current_val == "all":
+            active = {"left", "top", "right", "bottom"}
+        else:
+            active = set(e.strip() for e in current_val.split("|") if e.strip())
+
+        if toggled_edge == "all":
+            if checked:
+                active = {"left", "top", "right", "bottom"}
+            else:
+                active = {"left", "top"}  # Standard SL default when resetting all
+        else:
+            if checked:
+                active.add(toggled_edge)
+            else:
+                active.discard(toggled_edge)
+
+        if len(active & {"left", "top", "right", "bottom"}) == 4:
+            new_val = "all"
+        elif not active:
+            new_val = ""
+        else:
+            order = ["left", "top", "right", "bottom"]
+            new_val = "|".join([e for e in order if e in active])
+
+        if "follows" in self.editors and self.editors["follows"][1] == "follows":
+            self._update_follows_checkboxes(self.editors["follows"][0], new_val)
+
+        self._on_property_edited("follows", new_val, "str")
 
     def _rebuild_form(self) -> None:
         """Dynamically builds group boxes and editor widgets based on the item's schema.
@@ -314,7 +379,28 @@ class PropertyInspector(QWidget):
                         attr_name, meta.get("default", "")
                     )
 
-                    if attr_type == "bool":
+                    # --- Custom Checkbox Group for 'follows' Attribute ---
+                    if attr_name == "follows":
+                        container = QWidget()
+                        box_layout = QHBoxLayout(container)
+                        box_layout.setContentsMargins(0, 0, 0, 0)
+                        box_layout.setSpacing(6)
+
+                        edges = ["left", "top", "right", "bottom", "all"]
+                        checkboxes = {}
+                        for edge in edges:
+                            cb = QCheckBox(edge.capitalize())
+                            cb.toggled.connect(
+                                lambda checked, e=edge: self._on_follows_checkbox_toggled(e, checked)
+                            )
+                            box_layout.addWidget(cb)
+                            checkboxes[edge] = cb
+
+                        container.checkboxes = checkboxes
+                        self._update_follows_checkboxes(container, str(current_val))
+                        self.editors[attr_name] = (container, "follows")
+                        form_layout.addRow(QLabel(f"{attr_name}:"), container)
+                    elif attr_type == "bool":
                         editor = QCheckBox()
                         editor.setChecked(str(current_val).lower() in ["true", "1", "yes"])
                         editor.toggled.connect(
@@ -510,6 +596,8 @@ class PropertyInspector(QWidget):
             )
             print(f"[Verbose Error] _browse_image_file exception: {e}")
 
+    from typing import Any
+
     def _on_property_edited(self, attr_name: str, value: Any, attr_type: str) -> None:
         """Processes real-time edits made to any property field in the inspector.
 
@@ -520,7 +608,7 @@ class PropertyInspector(QWidget):
         Args:
             attr_name: The name of the attribute being modified.
             value: The raw value emitted from the editor widget.
-            attr_type: The schema data type ('str', 'bool', 'combo').
+            attr_type: The schema data type ('str', 'bool', 'combo', 'follows').
         """
         try:
             if self.updating or not self.current_xui_item:
@@ -544,7 +632,8 @@ class PropertyInspector(QWidget):
                     x = float(self.current_xui_item.attributes.get("left", 0))
                     y = float(self.current_xui_item.attributes.get("top", 0))
                     self.current_xui_item.setPos(x, y)
-                    self.current_xui_item.sync_attributes_to_geometry()
+                    if hasattr(self.current_xui_item, "sync_attributes_to_geometry"):
+                        self.current_xui_item.sync_attributes_to_geometry()
                 elif attr_name in ["left_delta", "left_pad", "top_delta", "top_pad"]:
                     # Handle relative spatial alignments against previous sibling widgets
                     parent = self.current_xui_item.parentItem()
@@ -568,7 +657,51 @@ class PropertyInspector(QWidget):
                                 self.current_xui_item.setY(
                                     prev_sib.y() + prev_sib.rect().height() + float(val_str)
                                 )
-                            self.current_xui_item.sync_attributes_to_geometry()
+                            if hasattr(self.current_xui_item, "sync_attributes_to_geometry"):
+                                self.current_xui_item.sync_attributes_to_geometry()
+                elif attr_name in [
+                    "orientation", "border_size", "padding", "auto_resize",
+                    "min_width", "min_height", "max_width", "max_height",
+                    "tab_position", "tab_width", "tab_height", "tab_min_width", "tab_max_width"
+                ]:
+                    # Handle layout engine orientation, padding, and dimensional constraints
+                    if hasattr(self.current_xui_item, "sync_attributes_to_geometry"):
+                        self.current_xui_item.sync_attributes_to_geometry()
+                elif attr_name == "follows":
+                    if hasattr(self.current_xui_item, "sync_attributes_to_geometry"):
+                        self.current_xui_item.sync_attributes_to_geometry()
+                elif attr_name == "visible":
+                    # Evaluate standard SL XML boolean string representations
+                    is_visible = str(val_str).lower() in ["true", "1", "yes"]
+
+                    # Apply 40% opacity to "hidden" items so they remain editable on the canvas
+                    self.current_xui_item.setOpacity(1.0 if is_visible else 0.4)
+                    self.current_xui_item.update()
+                else:
+                    # Fallback: Ensure geometry is synced for any custom or newly edited attributes
+                    if hasattr(self.current_xui_item, "sync_attributes_to_geometry"):
+                        self.current_xui_item.sync_attributes_to_geometry()
+
+                # --- NEW: Consolidated Layout Engine Trigger ---
+                # Automatically recalculate layouts if the modified item is a container itself
+                if getattr(self.current_xui_item, "tag_name", "") in ("layout_stack", "layout_panel") and hasattr(
+                        self.current_xui_item, "update_layout_stack"):
+                    self.current_xui_item.update_layout_stack()
+                elif getattr(self.current_xui_item, "tag_name", "") == "tab_container" and hasattr(
+                        self.current_xui_item, "update_tabs"):
+                    self.current_xui_item.update_tabs()
+
+                # Automatically update parent containers if a child item (like a panel or tab) was modified
+                parent = self.current_xui_item.parentItem()
+                if parent:
+                    if getattr(parent, "tag_name", "") in ("layout_stack", "layout_panel") and hasattr(parent,
+                                                                                                       "update_layout_stack"):
+                        if not getattr(parent, "_updating_stack", False):
+                            parent.update_layout_stack()
+                    elif getattr(parent, "tag_name", "") == "tab_container" and hasattr(parent, "update_tabs"):
+                        parent.update_tabs()
+                # -----------------------------------------------
+
             except ValueError:
                 pass
 

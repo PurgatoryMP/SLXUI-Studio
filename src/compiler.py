@@ -80,6 +80,14 @@ class XUICompiler:
             if not export_geo:
                 skip_keys.extend(["left", "top", "right", "bottom", "width", "height"])
 
+            # In a layout_stack, positional and anchor attributes are invalid on child panels
+            parent = item.parentItem() if hasattr(item, "parentItem") else None
+            if parent and getattr(parent, "tag_name", "") == "layout_stack" and tag_name == "layout_panel":
+                skip_keys.extend([
+                    "left", "top", "right", "bottom", "follows",
+                    "left_delta", "top_delta", "left_pad", "top_pad"
+                ])
+
             # Filter and sort XML attributes
             attrs = []
             for k, v in sorted(item.attributes.items()):
@@ -123,11 +131,9 @@ class XUICompiler:
             else:
                 lines.extend((tag_open + ">").split('\n'))
 
-                # Write inner text payload if present
                 if item.inner_text:
                     lines.append(f"{indent}    {item.inner_text}")
 
-                # Serialize non-visual data children (e.g., event bindings, timers)
                 for nv_child in item.non_visual_children:
                     nv_tag, nv_attrs = nv_child['tag'], nv_child['attributes']
                     attr_strs = [f'{k}="{v}"' for k, v in sorted(nv_attrs.items())]
@@ -142,34 +148,28 @@ class XUICompiler:
                             )
                     lines.extend((f"{indent}    <{nv_tag}{attr_str} />").split('\n'))
 
-                # Recursively compile child elements belonging to the same file
                 for child in visual_same_file:
                     _build_lines(child, indent_lvl + 1)
 
                 lines.append(f"{indent}</{tag_name}>")
                 end_line = len(lines) - 1
 
-            # Track line boundaries for active selections in the code editor
             if item == selected_item:
                 selections['selected'].append((start_line, end_line))
 
-            # Run validation checks and track error/warning line ranges
             errors, warnings = item.validate()
             if errors:
                 selections['errors'].append((start_line, end_line, errors))
             if warnings:
                 selections['warnings'].append((start_line, end_line, warnings))
 
-            # Cascade build to imported files, resetting indentation to root level (0)
             for imp_child in imported_roots:
                 _build_lines(imp_child, 0)
 
-        # Initiate compilation from the provided root element
         if root_item:
             init_file(getattr(root_item, 'source_file', 'layout.xml'))
             _build_lines(root_item, 0)
 
-        # Assemble final output dictionary mapping filenames to compiled strings and metadata
         results = {}
         for k, v in files.items():
             results[k] = ("\n".join(v['lines']), v['selections'])
