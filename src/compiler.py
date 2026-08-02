@@ -80,7 +80,7 @@ class XUICompiler:
             if not export_geo:
                 skip_keys.extend(["left", "top", "right", "bottom", "width", "height"])
 
-            # In a layout_stack, positional and anchor attributes are invalid on child panels
+            # In a layout_stack, positional, anchor, and follows attributes are invalid on child panels
             parent = item.parentItem() if hasattr(item, "parentItem") else None
             if parent and getattr(parent, "tag_name", "") == "layout_stack" and tag_name == "layout_panel":
                 skip_keys.extend([
@@ -88,12 +88,24 @@ class XUICompiler:
                     "left_delta", "top_delta", "left_pad", "top_pad"
                 ])
 
+            # Ensure we read the state markers correctly
+            is_imported = getattr(item, 'is_imported', False)
+            imported_keys = getattr(item, 'imported_keys', set())
+
             # Filter and sort XML attributes
             attrs = []
             for k, v in sorted(item.attributes.items()):
                 if k in skip_keys or str(v).strip() == "":
                     continue
-                attrs.append(f'{k}="{v}"')
+
+                if is_imported:
+                    # STRICT CONSTRAINT 1: Only export this attribute if it existed in the original XML.
+                    if k in imported_keys:
+                        attrs.append(f'{k}="{v}"')
+                else:
+                    # STRICT CONSTRAINT 2 & 3: Standard behavior.
+                    # Newly dropped widgets (is_imported = False) get full default injections.
+                    attrs.append(f'{k}="{v}"')
 
             # Format opening tag: inline if 2 or fewer attributes, multiline otherwise
             if attrs:

@@ -950,8 +950,6 @@ class MainWindow(QMainWindow):
 
         # Step 2: Initialize attribute copy and track structural geometry flags
         attributes = dict(element.attrib)
-        if not any(k in attributes for k in ["left", "right", "top", "bottom", "width", "height"]):
-            attributes["designer_export_geometry"] = "false"
 
         # Step 3: Resolve bounding dimensions of the parent host container context
         parent_w = parent_item.rect().width() if isinstance(parent_item, XUIGraphicsItem) else 500
@@ -1026,6 +1024,11 @@ class MainWindow(QMainWindow):
         # Step 9: Instantiate canvas component wrappers and bind tracking attributes
         item = XUIGraphicsItem(tag_name, attributes)
         item.source_file = current_file
+
+        # --- STRICT BEHAVIOR MODIFICATION: Tag imported files to bypass injection logic ---
+        item.is_imported = True
+        item.imported_keys = set(element.attrib.keys())
+        # ----------------------------------------------------------------------------------
 
         if element.text and element.text.strip():
             item.inner_text = element.text.strip()

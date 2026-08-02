@@ -64,10 +64,6 @@ class StackDragHandle(QGraphicsRectItem):
                 self.start_w2 = p2.rect().width()
                 self.start_h2 = p2.rect().height()
 
-                # Disable auto_resize so explicit drag split dimensions are preserved by layout engine
-                p1.attributes["auto_resize"] = "false"
-                p2.attributes["auto_resize"] = "false"
-
                 self.update()
                 event.accept()
                 return
@@ -711,12 +707,10 @@ class XUIGraphicsItem(QGraphicsRectItem):
     def update_layout_stack(self) -> None:
         """Recalculates and positions child panels within a layout_stack.
 
-        Distributes remaining container space among expanding panels while respecting
-        min/max constraints, and recursively invokes resize_item on child panels
-        so internal elements adjust proportionally.
+        Distributes remaining container space proportionally among expanding panels
+        while respecting min/max constraints, auto_resize flags, and cross-axis alignment.
         """
         # --- REENTRANCY GUARD ---
-        # Prevents infinite recursion when resizing/syncing child panels
         if getattr(self, "_updating_stack", False):
             return
         self._updating_stack = True
@@ -733,16 +727,8 @@ class XUIGraphicsItem(QGraphicsRectItem):
             border_size = int(self.attributes.get("border_size", 0))
             padding = int(self.attributes.get("padding", 0))
 
-            def is_expanding(item: "XUIGraphicsItem", orient: str) -> bool:
-                follows = item.attributes.get("follows", "").lower()
-                auto_resize = item.attributes.get("auto_resize", "true").lower() == "true"
-                if auto_resize or follows == "all":
-                    return True
-                if orient == "vertical" and "top" in follows and "bottom" in follows:
-                    return True
-                if orient == "horizontal" and "left" in follows and "right" in follows:
-                    return True
-                return False
+            def is_expanding(item: "XUIGraphicsItem") -> bool:
+                return item.attributes.get("auto_resize", "true").lower() == "true"
 
             def get_min_max(item: "XUIGraphicsItem", orient: str) -> Tuple[float, float]:
                 if orient == "vertical":
@@ -767,12 +753,14 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 avail_height = max(10.0, stack_height - total_gap)
 
                 fixed_height = sum(
-                    max(10.0, c.rect().height()) for c in panels if not is_expanding(c, "vertical")
+                    max(10.0, c.rect().height()) for c in panels if not is_expanding(c)
                 )
                 remaining_height = max(0.0, avail_height - fixed_height)
-                expanding_panels = [c for c in panels if is_expanding(c, "vertical")]
+                expanding_panels = [c for c in panels if is_expanding(c)]
 
-                expand_share = remaining_height / len(expanding_panels) if expanding_panels else 0.0
+                total_expanding_initial_size = sum(
+                    max(10.0, c.rect().height()) for c in expanding_panels
+                )
 
                 current_y = float(border_size)
                 max_allowed_y = stack_height - float(border_size)
@@ -780,12 +768,15 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 for child in panels:
                     if child in expanding_panels:
                         min_h, max_h = get_min_max(child, "vertical")
-                        child_h = max(min_h, min(max_h, expand_share))
+                        curr_h = max(10.0, child.rect().height())
+                        if total_expanding_initial_size > 0:
+                            proportional_share = remaining_height * (curr_h / total_expanding_initial_size)
+                        else:
+                            proportional_share = remaining_height / len(expanding_panels)
+                        child_h = max(min_h, min(max_h, proportional_share))
                     else:
                         child_h = max(10.0, child.rect().height())
 
-                    # --- BOUNDARY ENFORCEMENT ---
-                    # Strictly clamp panel height so it never extends beyond the bottom border
                     remaining_space = max(10.0, max_allowed_y - current_y)
                     child_h = min(child_h, remaining_space)
                     child_w = avail_width
@@ -806,12 +797,14 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 avail_height = max(10.0, stack_height - (border_size * 2))
 
                 fixed_width = sum(
-                    max(10.0, c.rect().width()) for c in panels if not is_expanding(c, "horizontal")
+                    max(10.0, c.rect().width()) for c in panels if not is_expanding(c)
                 )
                 remaining_width = max(0.0, avail_width - fixed_width)
-                expanding_panels = [c for c in panels if is_expanding(c, "horizontal")]
+                expanding_panels = [c for c in panels if is_expanding(c)]
 
-                expand_share = remaining_width / len(expanding_panels) if expanding_panels else 0.0
+                total_expanding_initial_size = sum(
+                    max(10.0, c.rect().width()) for c in expanding_panels
+                )
 
                 current_x = float(border_size)
                 max_allowed_x = stack_width - float(border_size)
@@ -819,12 +812,15 @@ class XUIGraphicsItem(QGraphicsRectItem):
                 for child in panels:
                     if child in expanding_panels:
                         min_w, max_w = get_min_max(child, "horizontal")
-                        child_w = max(min_w, min(max_w, expand_share))
+                        curr_w = max(10.0, child.rect().width())
+                        if total_expanding_initial_size > 0:
+                            proportional_share = remaining_width * (curr_w / total_expanding_initial_size)
+                        else:
+                            proportional_share = remaining_width / len(expanding_panels)
+                        child_w = max(min_w, min(max_w, proportional_share))
                     else:
                         child_w = max(10.0, child.rect().width())
 
-                    # --- BOUNDARY ENFORCEMENT ---
-                    # Strictly clamp panel width so it never extends beyond the right border
                     remaining_space = max(10.0, max_allowed_x - current_x)
                     child_w = min(child_w, remaining_space)
                     child_h = avail_height
@@ -844,27 +840,32 @@ class XUIGraphicsItem(QGraphicsRectItem):
             self._update_stack_drag_handles(panels, orientation)
 
         finally:
-            # Always release the lock even if an exception occurs during layout
             self._updating_stack = False
 
     def _update_stack_drag_handles(self, panels: List[any], orientation: str) -> None:
-        """Creates, removes, and positions StackDragHandle items between layout panels."""
+        """Creates, removes, and positions StackDragHandle items between layout panels based on user_resize."""
         if not hasattr(self, "_drag_handles"):
             self._drag_handles = []
 
-        needed_handles = max(0, len(panels) - 1)
+        valid_adjacent_pairs = []
+        for i in range(len(panels) - 1):
+            p1 = panels[i]
+            p2 = panels[i + 1]
+            p1_resize = str(p1.attributes.get("user_resize", "false")).lower() in ("true", "1", "yes")
+            p2_resize = str(p2.attributes.get("user_resize", "false")).lower() in ("true", "1", "yes")
+            if p1_resize or p2_resize:
+                valid_adjacent_pairs.append((i, p1, p2))
 
-        # Remove excess handles if panels were deleted
+        needed_handles = len(valid_adjacent_pairs)
+
         while len(self._drag_handles) > needed_handles:
             handle = self._drag_handles.pop()
             if handle.scene():
                 handle.scene().removeItem(handle)
             handle.setParentItem(None)
 
-        # Instantiate new handles if panels were added
         while len(self._drag_handles) < needed_handles:
-            idx = len(self._drag_handles)
-            handle = StackDragHandle(self, idx, orientation)
+            handle = StackDragHandle(self, 0, orientation)
             self._drag_handles.append(handle)
 
         border_size = int(self.attributes.get("border_size", 0))
@@ -872,12 +873,10 @@ class XUIGraphicsItem(QGraphicsRectItem):
         stack_w = max(10.0, stack_rect.width())
         stack_h = max(10.0, stack_rect.height())
 
-        # Position and re-orient each drag handle precisely in the boundary gap
-        for i, handle in enumerate(self._drag_handles):
-            handle.index = i
+        for idx, (p_index, p1, p2) in enumerate(valid_adjacent_pairs):
+            handle = self._drag_handles[idx]
+            handle.index = p_index
             handle.orientation = orientation
-            p1 = panels[i]
-            p2 = panels[i + 1]
 
             if orientation == "vertical":
                 mid_y = (p1.y() + p1.rect().height() + p2.y()) / 2.0
@@ -1111,17 +1110,14 @@ class XUIGraphicsItem(QGraphicsRectItem):
             if parent and getattr(parent, "tag_name", "") == "layout_stack":
                 orient = parent.attributes.get("orientation", "vertical").lower()
                 border_size = int(parent.attributes.get("border_size", 0))
-                self.attributes["auto_resize"] = "false"
                 if orient == "vertical":
                     new_w = parent.rect().width() - (border_size * 2)
                     new_x = float(border_size)
-                    # Clamp height so dragging cannot extend the panel beyond the stack bottom
                     max_h = max(10.0, parent.rect().height() - cur_pos.y() - border_size)
                     new_h = min(new_h, max_h)
                 else:
                     new_h = parent.rect().height() - (border_size * 2)
                     new_y = float(border_size)
-                    # Clamp width so dragging cannot extend the panel beyond the stack right border
                     max_w = max(10.0, parent.rect().width() - cur_pos.x() - border_size)
                     new_w = min(new_w, max_w)
 
