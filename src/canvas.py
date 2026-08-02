@@ -8,8 +8,8 @@ and hierarchy re-parenting.
 from typing import Any, Optional
 
 from PySide6.QtCore import QLineF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QCursor
+from PySide6.QtWidgets import QMenu, QWidgetAction, QCheckBox, QGraphicsView, QGraphicsScene
 
 from graphics_item import XUIGraphicsItem
 
@@ -44,6 +44,7 @@ class CanvasContainer(QGraphicsView):
         self.scene = QGraphicsScene(0, 0, 1200, 900, self)
         self.scene.canvas_container = self
         self.setScene(self.scene)
+        self._clipboard_data = None
 
         # Configure grid defaults
         self.grid_snapping_enabled: bool = True
@@ -58,6 +59,196 @@ class CanvasContainer(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
 
         self.scene.selectionChanged.connect(self._on_selection_changed)
+
+    def contextMenuEvent(self, event):
+        """Spawns a right-click context menu for canvas items."""
+        item = self.itemAt(event.pos())
+        menu = QMenu(self)
+
+        if item and hasattr(item, "tag_name"):
+            copy_act = menu.addAction("Copy")
+            dup_act = menu.addAction("Duplicate")
+            menu.addSeparator()
+
+            # --- NEW: Anchor Point Submenu ---
+            anchor_menu = menu.addMenu("Anchor point")
+            edges = ["left", "top", "right", "bottom", "all"]
+            current_val = item.attributes.get("follows", "left|top").lower()
+
+            if current_val == "all":
+                active = {"left", "top", "right", "bottom", "all"}
+            else:
+                active = set(e.strip() for e in current_val.split("|") if e.strip())
+
+            for edge in edges:
+                action = QWidgetAction(menu)
+                cb = QCheckBox(f" {edge.capitalize()}")
+                cb.setChecked(edge in active)
+                # Style the checkbox to look cohesive with the menu
+                cb.setStyleSheet("padding: 3px 15px; background: transparent;")
+
+                def toggled_cb(checked, e=edge, xui_item=item):
+                    curr = xui_item.attributes.get("follows", "left|top").lower()
+                    act_set = {"left", "top", "right", "bottom"} if curr == "all" else set(
+                        x.strip() for x in curr.split("|") if x.strip())
+
+                    if e == "all":
+                        act_set = {"left", "top", "right", "bottom"} if checked else {"left", "top"}
+                    else:
+                        if checked:
+                            act_set.add(e)
+                        else:
+                            act_set.discard(e)
+
+                    if len(act_set & {"left", "top", "right", "bottom"}) == 4:
+                        new_val = "all"
+                    elif not act_set:
+                        new_val = ""
+                    else:
+                        new_val = "|".join([x for x in ["left", "top", "right", "bottom"] if x in act_set])
+
+                    xui_item.attributes["follows"] = new_val
+                    if hasattr(xui_item, "sync_attributes_to_geometry"):
+                        xui_item.sync_attributes_to_geometry()
+
+                    # Emit the modification signal so the PropertyInspector and Code View sync
+                    self.item_modified_signal.emit(xui_item)
+
+                cb.toggled.connect(toggled_cb)
+                action.setDefaultWidget(cb)
+                anchor_menu.addAction(action)
+            # ---------------------------------
+
+            menu.addSeparator()
+            delete_act = menu.addAction("Delete")
+
+            copy_act.triggered.connect(lambda: self.copy_item(item))
+            dup_act.triggered.connect(lambda: self.duplicate_item(item))
+            delete_act.triggered.connect(lambda: self._delete_selected_item(item))
+
+        paste_act = menu.addAction("Paste")
+        paste_act.setEnabled(self._clipboard_data is not None)
+        paste_act.triggered.connect(lambda: self.paste_item(self.mapToScene(event.pos())))
+
+        menu.exec(QCursor.pos())
+
+    def copy_item(self, item):
+        """Serializes the item's data to the internal clipboard."""
+        if not item:
+            return
+
+        self._clipboard_data = {
+            "tag_name": item.tag_name,
+            "attributes": dict(item.attributes),  # Deep copy the dictionary
+            "inner_text": getattr(item, 'inner_text', "")
+        }
+
+    def paste_item(self, drop_pos=None):
+        """Instantiates a new XUIGraphicsItem from the clipboard data."""
+        if not self._clipboard_data:
+            return
+
+        # Re-instantiate the item using the copied data
+        from graphics_item import XUIGraphicsItem
+        new_item = XUIGraphicsItem(
+            self._clipboard_data["tag_name"],
+            dict(self._clipboard_data["attributes"])
+        )
+
+        if self._clipboard_data["inner_text"]:
+            new_item.inner_text = self._clipboard_data["inner_text"]
+
+        # Offset the geometry so it doesn't paste directly on top of the original
+        try:
+            offset = self.grid_size if self.grid_size > 0 else 10
+            current_left = float(new_item.attributes.get("left", 0))
+            current_top = float(new_item.attributes.get("top", 0))
+
+            new_item.attributes["left"] = str(int(current_left + offset))
+            new_item.attributes["top"] = str(int(current_top + offset))
+            new_item.sync_geometry_to_attributes()
+        except ValueError:
+            pass
+
+        # Handle Parent Assignment (Paste into the root, or currently selected parent)
+        parent_item = self.root_container_instance
+        selected_items = self.scene.selectedItems()
+        if selected_items and hasattr(selected_items[0], "child_xui_items"):
+            parent_item = selected_items[0]
+
+        if parent_item:
+            parent_item.add_child_item(new_item)
+        else:
+            self.root_container_instance = new_item
+            self.scene.addItem(new_item)
+
+        # Clear current selection and select the newly pasted item
+        self.scene.clearSelection()
+        new_item.setSelected(True)
+
+        # Emit signals to trigger UI/Code updates
+        self.item_modified_signal.emit(new_item)
+        self.scene.update()
+
+    def duplicate_item(self, original_item: Any) -> None:
+        """Duplicates a control and attaches it as a sibling under the same parent."""
+        if not original_item:
+            return
+
+        import copy
+
+        # 1. Clone the attributes and tag
+        new_attributes = copy.deepcopy(original_item.attributes)
+
+        # Optional: Append a suffix to the name to prevent ID collisions
+        if "name" in new_attributes and new_attributes["name"] != "unnamed":
+            new_attributes["name"] = f"{new_attributes['name']}_copy"
+
+        # 2. Instantiate the new duplicate item
+        new_item = XUIGraphicsItem(original_item.tag_name, new_attributes)
+        new_item.source_file = getattr(original_item, 'source_file', 'layout.xml')
+
+        # 3. Resolve the structural hierarchy (The crucial fix)
+        parent_item = original_item.parentItem()
+
+        if parent_item:
+            # Assign as a sibling by attaching it to the original's parent
+            new_item.setParentItem(parent_item)
+            if not hasattr(parent_item, "child_xui_items"):
+                parent_item.child_xui_items = []
+            parent_item.child_xui_items.append(new_item)
+        else:
+            # Fallback if duplicating the root canvas item
+            self.scene.addItem(new_item)
+
+        # 4. Offset the spawn position visually so it doesn't completely overlap
+        new_x = original_item.x() + 15
+        new_y = original_item.y() + 15
+        new_item.setPos(new_x, new_y)
+
+        # Ensure physical geometry bounds map to the new attributes
+        if hasattr(new_item, "sync_geometry_to_attributes"):
+            new_item.sync_geometry_to_attributes()
+
+        # 5. Trigger layout recalculations on the shared parent
+        if parent_item:
+            parent_tag = getattr(parent_item, "tag_name", "")
+            if parent_tag in ("layout_stack", "layout_panel") and hasattr(parent_item, "update_layout_stack"):
+                parent_item.update_layout_stack()
+            elif parent_tag == "tab_container" and hasattr(parent_item, "update_tabs"):
+                parent_item.update_tabs()
+
+            if hasattr(parent_item, "update_z_orders"):
+                parent_item.update_z_orders()
+
+        # 6. Notify the workspace and scene to update
+        self.item_modified_signal.emit(new_item)
+
+        # Automatically select the newly created item
+        self.scene.clearSelection()
+        new_item.setSelected(True)
+        self.item_selected_signal.emit(new_item)
+        self.scene.update()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         """Renders the workspace background and dynamic snapping grid lines.

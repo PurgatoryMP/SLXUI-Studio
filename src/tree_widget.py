@@ -7,12 +7,15 @@ synchronization between the tree view and the graphical canvas.
 from typing import Any, Optional
 
 from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
+    QMenu,
+    QWidgetAction,
+    QCheckBox
 )
 
 from graphics_item import XUIGraphicsItem
@@ -58,6 +61,85 @@ class SceneTreeWidget(QTreeWidget):
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.setInterval(150)
         self.refresh_timer.timeout.connect(self._do_refresh_tree)
+
+    def contextMenuEvent(self, event: Any) -> None:
+        """Spawns a right-click context menu for the DOM hierarchy tree."""
+        if not self.canvas_container:
+            return
+
+        tree_item = self.itemAt(event.pos())
+        xui_item = None
+
+        if tree_item:
+            xui_item = tree_item.data(0, Qt.UserRole)
+
+        menu = QMenu(self)
+
+        if xui_item and hasattr(xui_item, "tag_name"):
+            copy_act = menu.addAction("Copy")
+            dup_act = menu.addAction("Duplicate")
+            menu.addSeparator()
+
+            # --- NEW: Anchor Point Submenu ---
+            anchor_menu = menu.addMenu("Anchor point")
+            edges = ["left", "top", "right", "bottom", "all"]
+            current_val = xui_item.attributes.get("follows", "left|top").lower()
+
+            if current_val == "all":
+                active = {"left", "top", "right", "bottom", "all"}
+            else:
+                active = set(e.strip() for e in current_val.split("|") if e.strip())
+
+            for edge in edges:
+                action = QWidgetAction(menu)
+                cb = QCheckBox(f" {edge.capitalize()}")
+                cb.setChecked(edge in active)
+                cb.setStyleSheet("padding: 3px 15px; background: transparent;")
+
+                def toggled_cb(checked, e=edge, target_item=xui_item):
+                    curr = target_item.attributes.get("follows", "left|top").lower()
+                    act_set = {"left", "top", "right", "bottom"} if curr == "all" else set(
+                        x.strip() for x in curr.split("|") if x.strip())
+
+                    if e == "all":
+                        act_set = {"left", "top", "right", "bottom"} if checked else {"left", "top"}
+                    else:
+                        if checked:
+                            act_set.add(e)
+                        else:
+                            act_set.discard(e)
+
+                    if len(act_set & {"left", "top", "right", "bottom"}) == 4:
+                        new_val = "all"
+                    elif not act_set:
+                        new_val = ""
+                    else:
+                        new_val = "|".join([x for x in ["left", "top", "right", "bottom"] if x in act_set])
+
+                    target_item.attributes["follows"] = new_val
+                    if hasattr(target_item, "sync_attributes_to_geometry"):
+                        target_item.sync_attributes_to_geometry()
+
+                    # Target the canvas_container's modification signal
+                    self.canvas_container.item_modified_signal.emit(target_item)
+
+                cb.toggled.connect(toggled_cb)
+                action.setDefaultWidget(cb)
+                anchor_menu.addAction(action)
+            # ---------------------------------
+
+            menu.addSeparator()
+            delete_act = menu.addAction("Delete")
+
+            copy_act.triggered.connect(lambda: self.canvas_container.copy_item(xui_item))
+            dup_act.triggered.connect(lambda: self.canvas_container.duplicate_item(xui_item))
+            delete_act.triggered.connect(lambda: self.canvas_container.delete_item(xui_item))
+
+        paste_act = menu.addAction("Paste")
+        paste_act.setEnabled(self.canvas_container._clipboard_data is not None)
+        paste_act.triggered.connect(lambda: self.canvas_container.paste_item())
+
+        menu.exec(QCursor.pos())
 
     def set_canvas(self, canvas: Any) -> None:
         """Binds the tree widget to the main editor canvas and connects synchronization signals.

@@ -6,14 +6,114 @@ using 'follows' rules, and specialized rendering for container widgets like
 floaters, tab containers, and layout stacks.
 """
 from PySide6.QtCore import Qt, QRectF, QPointF, QLineF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QCursor, QFont, QAction
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QCursor, QFont, QAction, QPainterPath
 from PySide6.QtWidgets import (
     QGraphicsRectItem, QGraphicsItem, QWidget, QMenu,
-    QGraphicsSceneContextMenuEvent, QStyleOptionGraphicsItem, QStyle
+    QGraphicsSceneContextMenuEvent, QStyleOptionGraphicsItem, QStyle,
+    QWidgetAction, QCheckBox, QVBoxLayout,
 )
 from registry import LLVIEW_PARAMS, LLUICTRL_PARAMS, XUI_REGISTRY
 from textures import TextureManager, draw_9_slice
 from typing import Any, Dict, List, Optional, Tuple
+
+
+class SelectionOverlay(QGraphicsItem):
+    """High-Z overlay that renders a translucent dashed selection border and handles.
+    Sits above all child widgets to ensure resize drag handles remain accessible."""
+
+    def __init__(self, xui_item: "XUIGraphicsItem") -> None:
+        super().__init__(xui_item)
+        self.xui_item = xui_item
+        self.setZValue(10000.0)  # Render above all child panels/widgets
+        self.setAcceptHoverEvents(True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.hide()
+
+    def boundingRect(self) -> QRectF:
+        return self.xui_item.boundingRect()
+
+    def shape(self) -> QPainterPath:
+        """Creates a hollow shape so clicks in the center fall through to children."""
+        path = QPainterPath()
+        rect = self.xui_item.rect()
+
+        # Add handles to the hit area
+        for handle in self.xui_item._get_handles().values():
+            path.addRect(handle)
+
+        # Add delete button to the hit area
+        path.addRect(self.xui_item._get_delete_rect())
+
+        # Add the border stroke area (hollow center)
+        path.addRect(rect.adjusted(-2, -2, 2, 2))
+        inner = QPainterPath()
+        inner.addRect(rect.adjusted(2, 2, -2, -2))
+        return path.subtracted(inner)
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: Optional[QWidget] = None) -> None:
+        rect = self.xui_item.rect()
+
+        # Draw translucent dashed border over obscured areas
+        painter.setPen(QPen(QColor(255, 255, 255, 128), 1.5, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect)
+
+        # Draw the standard solid handles
+        self.xui_item._draw_handles(painter)
+
+    def mousePressEvent(self, event: Any) -> None:
+        if event.button() == Qt.LeftButton:
+            pos = event.pos()
+
+            if self.xui_item._get_delete_rect().contains(pos):
+                if hasattr(self.scene(), 'canvas_container'):
+                    self.scene().canvas_container.delete_item(self.xui_item)
+                event.accept()
+                return
+
+            handles = self.xui_item._get_handles()
+            for h_id, r in handles.items():
+                if r.contains(pos):
+                    self.xui_item.resizing = True
+                    self.xui_item.resize_dir = h_id
+                    event.accept()
+                    return
+        # If the user clicked the dashed border (not a handle), let it fall through
+        event.ignore()
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        if self.xui_item.resizing:
+            self.xui_item.mouseMoveEvent(event)
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        if self.xui_item.resizing:
+            self.xui_item.mouseReleaseEvent(event)
+            event.accept()
+        else:
+            event.ignore()
+
+    def hoverMoveEvent(self, event: Any) -> None:
+        pos = event.pos()
+        handles = self.xui_item._get_handles()
+
+        if self.xui_item._get_delete_rect().contains(pos):
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+        elif handles["TL"].contains(pos) or handles["BR"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeFDiagCursor))
+        elif handles["TR"].contains(pos) or handles["BL"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeBDiagCursor))
+        elif handles["T"].contains(pos) or handles["B"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeVerCursor))
+        elif handles["L"].contains(pos) or handles["R"].contains(pos):
+            self.setCursor(QCursor(Qt.SizeHorCursor))
+        else:
+            self.setCursor(QCursor(Qt.SizeAllCursor))
+
+        event.accept()
+
 
 class StackDragHandle(QGraphicsRectItem):
     """An interactive drag handle rendered between layout_panels in a layout_stack."""
@@ -23,7 +123,7 @@ class StackDragHandle(QGraphicsRectItem):
         self.stack_item = stack_item
         self.index = index
         self.orientation = orientation
-        self.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable)
+        self.setFlags(QGraphicsItem.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
         self.setZValue(1000.0)  # Sit above child layout_panels so mouse events are intercepted
         self.resizing: bool = False
@@ -157,9 +257,9 @@ class StackDragHandle(QGraphicsRectItem):
             mid_y = rect.height() / 2.0
             pill_w = min(40.0, max(16.0, rect.width() * 0.2))
             pill_x = (rect.width() - pill_w) / 2.0
-            pill_rect = QRectF(pill_x, mid_y - 2.0, pill_w, 4.0)
+            pill_rect = QRectF(pill_x, mid_y - 4.0, pill_w, 8.0)
 
-            painter.fillRect(QRectF(0, mid_y - 1.0, rect.width(), 2.0), QColor("#2a2a2a"))
+            painter.fillRect(QRectF(0, mid_y - 2.0, rect.width(), 4.0), QColor("#2a2a2a"))
             painter.fillRect(
                 pill_rect,
                 QColor("#569CD6") if self.isUnderMouse() or self.resizing else QColor("#666666"),
@@ -170,9 +270,9 @@ class StackDragHandle(QGraphicsRectItem):
             mid_x = rect.width() / 2.0
             pill_h = min(40.0, max(16.0, rect.height() * 0.2))
             pill_y = (rect.height() - pill_h) / 2.0
-            pill_rect = QRectF(mid_x - 2.0, pill_y, 4.0, pill_h)
+            pill_rect = QRectF(mid_x - 4.0, pill_y, 8.0, pill_h)
 
-            painter.fillRect(QRectF(mid_x - 1.0, 0, 2.0, rect.height()), QColor("#2a2a2a"))
+            painter.fillRect(QRectF(mid_x - 2.0, 0, 4.0, rect.height()), QColor("#2a2a2a"))
             painter.fillRect(
                 pill_rect,
                 QColor("#569CD6") if self.isUnderMouse() or self.resizing else QColor("#666666"),
@@ -292,6 +392,14 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
         self.sync_geometry_to_attributes()
 
+        self.selection_overlay = SelectionOverlay(self)
+        self.sync_geometry_to_attributes()
+
+    def setRect(self, *args, **kwargs) -> None:
+        if hasattr(self, 'selection_overlay'):
+            self.selection_overlay.prepareGeometryChange()
+        super().setRect(*args, **kwargs)
+
     def itemChange(self, change, value):
         """Intercepts Qt item state changes to handle grid snapping and XML coordinate updates.
 
@@ -299,6 +407,12 @@ class XUIGraphicsItem(QGraphicsRectItem):
         positional XML attributes ('left', 'top', 'right', 'bottom', or relative delta/pad
         attributes) based on parent boundaries and sibling offsets.
         """
+        if change == QGraphicsItem.ItemSelectedHasChanged:
+            if self.isSelected():
+                self.selection_overlay.show()
+            else:
+                self.selection_overlay.hide()
+
         if change == QGraphicsItem.ItemPositionChange and self.scene():
             parent = self.parentItem()
             # In a layout stack, panel coordinates are strictly managed by the layout engine.
@@ -380,7 +494,7 @@ class XUIGraphicsItem(QGraphicsRectItem):
             duplicate_action.triggered.connect(lambda: getattr(canvas, "duplicate_selected", lambda: None)())
             delete_action.triggered.connect(lambda: getattr(canvas, "delete_selected", lambda: None)())
 
-        # "Anchor To" Submenu with Checkboxes
+        # "Anchor To" Submenu with Persistent Checkboxes
         anchor_menu = menu.addMenu("Anchor To")
         current_follows = self.attributes.get("follows", "left|top").lower()
         is_all = (current_follows == "all")
@@ -390,20 +504,43 @@ class XUIGraphicsItem(QGraphicsRectItem):
         else:
             active_edges = set(e.strip() for e in current_follows.split("|") if e.strip())
 
-        edges = ["Left", "Top", "Right", "Bottom"]
-        for edge in edges:
-            action = QAction(edge, menu)
-            action.setCheckable(True)
-            action.setChecked(edge.lower() in active_edges)
-            action.triggered.connect(lambda checked, e=edge.lower(): self._toggle_follow_edge(e, checked))
-            anchor_menu.addAction(action)
+        # Create a container widget and layout to host the checkboxes
+        checkbox_container = QWidget()
+        layout = QVBoxLayout(checkbox_container)
+        layout.setContentsMargins(15, 5, 15, 5)  # Padding so it looks like a native menu
+        layout.setSpacing(4)
 
-        anchor_menu.addSeparator()
-        all_action = QAction("All", menu)
-        all_action.setCheckable(True)
-        all_action.setChecked(is_all or len(active_edges) == 4)
-        all_action.triggered.connect(self._set_follow_all)
-        anchor_menu.addAction(all_action)
+        edges = ["Left", "Top", "Right", "Bottom"]
+        edge_checkboxes = {}
+
+        # Add individual edge checkboxes
+        for edge in edges:
+            cb = QCheckBox(edge)
+            cb.setChecked(edge.lower() in active_edges)
+            cb.toggled.connect(lambda checked, e=edge.lower(): self._toggle_follow_edge(e, checked))
+            layout.addWidget(cb)
+            edge_checkboxes[edge.lower()] = cb
+
+        layout.addSpacing(6)
+
+        # Add the "All" checkbox and wire it to sync the others visually
+        all_cb = QCheckBox("All")
+        all_cb.setChecked(is_all or len(active_edges) == 4)
+
+        def on_all_toggled(checked: bool) -> None:
+            self._set_follow_all(checked)
+            for cb in edge_checkboxes.values():
+                cb.blockSignals(True)  # Prevent double-firing the attribute updates
+                cb.setChecked(checked)
+                cb.blockSignals(False)
+
+        all_cb.toggled.connect(on_all_toggled)
+        layout.addWidget(all_cb)
+
+        # Embed the widget container into the menu
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(checkbox_container)
+        anchor_menu.addAction(widget_action)
 
         menu.exec(event.screenPos())
         event.accept()
@@ -880,12 +1017,17 @@ class XUIGraphicsItem(QGraphicsRectItem):
 
             if orientation == "vertical":
                 mid_y = (p1.y() + p1.rect().height() + p2.y()) / 2.0
-                handle.setRect(0, 0, max(10.0, stack_w - (border_size * 2)), 8.0)
-                handle.setPos(float(border_size), mid_y - 4.0)
+                # Change 8.0 to your desired thickness (e.g., 16.0)
+                handle.setRect(0, 0, max(10.0, stack_w - (border_size * 2)), 16.0)
+                # Change the offset to half of your new thickness (e.g., 16 / 2 = 8.0)
+                handle.setPos(float(border_size), mid_y - 8.0)
             else:
                 mid_x = (p1.x() + p1.rect().width() + p2.x()) / 2.0
-                handle.setRect(0, 0, 8.0, max(10.0, stack_h - (border_size * 2)))
-                handle.setPos(mid_x - 4.0, float(border_size))
+                # Change 8.0 to your desired thickness (e.g., 16.0)
+                handle.setRect(0, 0, 16.0, max(10.0, stack_h - (border_size * 2)))
+                # Change the offset to half of your new thickness (e.g., 16 / 2 = 8.0)
+                handle.setPos(mid_x - 8.0, float(border_size))
+
             handle.setZValue(1000.0)
             handle.setVisible(self.isVisible())
 
@@ -1045,26 +1187,7 @@ class XUIGraphicsItem(QGraphicsRectItem):
         super().mousePressEvent(event)
 
     def hoverMoveEvent(self, event):
-        if not self.isSelected():
-            self.setCursor(QCursor(Qt.ArrowCursor))
-            return super().hoverMoveEvent(event)
-
-        pos = event.pos()
-        handles = self._get_handles()
-
-        if self._get_delete_rect().contains(pos):
-            self.setCursor(QCursor(Qt.PointingHandCursor))
-        elif handles["TL"].contains(pos) or handles["BR"].contains(pos):
-            self.setCursor(QCursor(Qt.SizeFDiagCursor))
-        elif handles["TR"].contains(pos) or handles["BL"].contains(pos):
-            self.setCursor(QCursor(Qt.SizeBDiagCursor))
-        elif handles["T"].contains(pos) or handles["B"].contains(pos):
-            self.setCursor(QCursor(Qt.SizeVerCursor))
-        elif handles["L"].contains(pos) or handles["R"].contains(pos):
-            self.setCursor(QCursor(Qt.SizeHorCursor))
-        else:
-            self.setCursor(QCursor(Qt.SizeAllCursor))
-
+        self.setCursor(QCursor(Qt.ArrowCursor))
         super().hoverMoveEvent(event)
 
     def mouseMoveEvent(self, event):
